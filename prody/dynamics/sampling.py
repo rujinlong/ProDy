@@ -16,7 +16,7 @@ __all__ = ['deformAtoms', 'sampleModes', 'traverseMode']
 
 
 def sampleModes(modes, atoms=None, n_confs=1000, rmsd=1.0):
-    """Return an ensemble of randomly sampled conformations along given
+    """Returns an ensemble of randomly sampled conformations along given
     *modes*.  If *atoms* are provided, sampling will be around its active
     coordinate set.  Otherwise, sampling is around the 0 coordinate set.
 
@@ -38,12 +38,12 @@ def sampleModes(modes, atoms=None, n_confs=1000, rmsd=1.0):
     :returns: :class:`.Ensemble`
 
     For given normal modes :math:`[u_1 u_2 ... u_m]` and their eigenvalues
-    :math:`[\lambda_1 \lambda_2 ... \lambda_m]`, a new conformation
+    :math:`[\\lambda_1 \\lambda_2 ... \\lambda_m]`, a new conformation
     is sampled using the relation:
 
     .. math::
 
-       R_k = R_0 + s \sum_{i=1}^{m} r_i^k \lambda^{-0.5}_i u_i
+       R_k = R_0 + s \\sum_{i=1}^{m} r_i^k \\lambda^{-0.5}_i u_i
 
     :math:`R_0` is the active coordinate set of *atoms*.
     :math:`[r_1^k r_2^k ... r_m^k]` are normally distributed random numbers
@@ -53,21 +53,21 @@ def sampleModes(modes, atoms=None, n_confs=1000, rmsd=1.0):
 
     .. math::
 
-      RMSD^k = \sqrt{ {\\left( s \sum_{i=1}^{m} r_i^k \lambda^{-0.5}_i u_i  \\right)}^{2} / N } = \\frac{s}{ \sqrt{N}} \sqrt{ \sum_{i=1}^{m} (r_i^k)^2 \lambda^{-1}_i  }
+      RMSD^k = \\sqrt{ {\\left( s \\sum_{i=1}^{m} r_i^k \\lambda^{-0.5}_i u_i  \\right)}^{2} / N } = \\frac{s}{ \\sqrt{N}} \\sqrt{ \\sum_{i=1}^{m} (r_i^k)^2 \\lambda^{-1}_i  }
 
 
     Average :math:`RMSD` of the generated conformations from the initial conformation is:
 
     .. math::
 
-      \\left< RMSD^k \\right> = \\frac{s}{ \sqrt{N}} \\left< \sqrt{ \sum_{i=1}^{m} (r_i^k)^2 \lambda^{-1}_i } \\right>
+      \\left< RMSD^k \\right> = \\frac{s}{ \\sqrt{N}} \\left< \\sqrt{ \\sum_{i=1}^{m} (r_i^k)^2 \\lambda^{-1}_i } \\right>
 
 
     From this relation :math:`s` scaling factor obtained using the relation
 
     .. math::
 
-       s =  \\left< RMSD^k \\right> \sqrt{N} {\\left< \sqrt{ \sum_{i=1}^{m} (r_i)^2 \lambda^{-1}_i} \\right>}^{-1}
+       s =  \\left< RMSD^k \\right> \\sqrt{N} {\\left< \\sqrt{ \\sum_{i=1}^{m} (r_i)^2 \\lambda^{-1}_i} \\right>}^{-1}
 
 
     Note that random numbers are generated before conformations are
@@ -76,7 +76,7 @@ def sampleModes(modes, atoms=None, n_confs=1000, rmsd=1.0):
     value.
 
     Note that if modes are from a :class:`.PCA`, variances are used instead of
-    inverse eigenvalues, i.e. :math:`\sigma_i \sim \lambda^{-1}_i`.
+    inverse eigenvalues, i.e. :math:`\\sigma_i \\sim \\lambda^{-1}_i`.
 
     See also :func:`.showEllipsoid`."""
 
@@ -89,12 +89,15 @@ def sampleModes(modes, atoms=None, n_confs=1000, rmsd=1.0):
     n_atoms = modes.numAtoms()
     initial = None
     if atoms is not None:
-        if not isinstance(atoms, (Atomic)):
+        if isinstance(atoms, Atomic):
+            if atoms.numAtoms() != n_atoms:
+                raise ValueError('number of atoms do not match')
+            initial = atoms.getCoords()
+        elif isinstance(atoms, np.ndarray):
+            initial = atoms
+        else:
             raise TypeError('{0} is not correct type for atoms'
                             .format(type(atoms)))
-        if atoms.numAtoms() != n_atoms:
-            raise ValueError('number of atoms do not match')
-        initial = atoms.getCoords()
 
     rmsd = float(rmsd)
     LOGGER.info('Parameter: rmsd = {0:.2f} A'.format(rmsd))
@@ -140,7 +143,7 @@ def sampleModes(modes, atoms=None, n_confs=1000, rmsd=1.0):
     return ensemble
 
 
-def traverseMode(mode, atoms, n_steps=10, rmsd=1.5):
+def traverseMode(mode, atoms, n_steps=10, rmsd=1.5, **kwargs):
     """Generates a trajectory along a given *mode*, which can be used to
     animate fluctuations in an external program.
 
@@ -153,24 +156,44 @@ def traverseMode(mode, atoms, n_steps=10, rmsd=1.5):
 
     :arg n_steps: number of steps to take along each direction,
         for example, for ``n_steps=10``, 20 conformations will be
-        generated along the first mode, default is 10.
+        generated along *mode* with structure *atoms* in between, 
+        default is 10.
     :type n_steps: int
 
     :arg rmsd: maximum RMSD that the conformations will have with
         respect to the initial conformation, default is 1.5 Å
     :type rmsd: float
 
+    :arg pos: whether to include steps in the positive mode
+        direction, default is **True**
+    :type pos: bool
+
+    :arg neg: whether to include steps in the negative mode
+        direction, default is **True**
+    :type neg: bool
+
+    :arg reverse: whether to reverse the direction
+        default is **False**
+    :type reverse: bool
+
     :returns: :class:`.Ensemble`
 
     For given normal mode :math:`u_i`, its eigenvalue
-    :math:`\lambda_i`, number of steps :math:`n`, and maximum :math:`RMSD`
+    :math:`\\lambda_i`, number of steps :math:`n`, and maximum :math:`RMSD`
     conformations :math:`[R_{-n} R_{-n+1} ... R_{-1} R_0 R_1 ... R_n]` are
     generated.
 
     :math:`R_0` is the active coordinate set of *atoms*.
-    :math:`R_k = R_0 + sk\lambda_iu_i`, where :math:`s` is found using
-    :math:`s = ((N (\\frac{RMSD}{n})^2) / \lambda_i^{-1}) ^{0.5}`, where
+    :math:`R_k = R_0 + sk\\lambda_iu_i`, where :math:`s` is found using
+    :math:`s = ((N (\\frac{RMSD}{n})^2) / \\lambda_i^{-1}) ^{0.5}`, where
     :math:`N` is the number of atoms."""
+
+    pos = kwargs.get('pos', True)
+    neg = kwargs.get('neg', True)
+    reverse = kwargs.get('reverse', False)
+
+    if pos is False and neg is False:
+        raise ValueError('pos and neg cannot both be False')
 
     if not isinstance(mode, VectorBase):
         raise TypeError('mode must be a Mode or Vector instance, '
@@ -196,7 +219,10 @@ def traverseMode(mode, atoms, n_steps=10, rmsd=1.5):
     step = rmsd / n_steps
     LOGGER.info('Step size is {0:.2f} A RMSD'.format(step))
     arr = mode.getArrayNx3()
-    var = mode.getVariance()
+    try:
+        var = mode.getVariance()
+    except AttributeError:
+        var = 1.
     scale = ((n_atoms * step**2) / var) ** 0.5
     LOGGER.info('Mode is scaled by {0}.'.format(scale))
 
@@ -209,12 +235,24 @@ def traverseMode(mode, atoms, n_steps=10, rmsd=1.5):
         confs_sub.append(confs_sub[-1] - array)
     confs_sub.reverse()
     ensemble = Ensemble('Conformations along {0}'.format(name))
+    ensemble.setAtoms(atoms)
     ensemble.setCoords(initial)
-    ensemble.addCoordset(np.array(confs_sub + [initial] + confs_add))
+
+    conf_list = [initial]
+    if pos:
+        conf_list = conf_list + confs_add
+    if  neg:
+        conf_list = confs_sub + conf_list
+    conf_array = np.array(conf_list)
+
+    if reverse:
+        conf_array = conf_array[::-1]
+
+    ensemble.addCoordset(conf_array)
     return ensemble
 
 
-def deformAtoms(atoms, mode, rmsd=None):
+def deformAtoms(atoms, mode, rmsd=None, replace=False, scale=None):
     """Generate a new coordinate set for *atoms* along the *mode*.  *atoms*
     must be a :class:`.AtomGroup` instance.  New coordinate set will be
     appended to *atoms*. If *rmsd* is provided, *mode* will be scaled to
@@ -232,6 +270,9 @@ def deformAtoms(atoms, mode, rmsd=None):
     if atoms.numAtoms() != mode.numAtoms():
         raise ValueError('number of atoms do not match')
 
+    if scale is None: 
+        scale = 1.
+
     array = mode.getArrayNx3()
 
     if rmsd is not None:
@@ -239,6 +280,14 @@ def deformAtoms(atoms, mode, rmsd=None):
         # rmsd = ( ((scalar * array)**2).sum() / n_atoms )**0.5
         scalar = (atoms.numAtoms() * rmsd**2 / (array**2).sum())**0.5
         LOGGER.info('Mode is scaled by {0}.'.format(scalar))
-        atoms.addCoordset(atoms.getCoords() + array * scalar)
+        if replace is False:
+            atoms.addCoordset(atoms.getCoords() + array * scalar * scale)
+        else:
+            atoms.setCoords(atoms.getCoords() + array * scalar * scale)
     else:
-        atoms.addCoordset(atoms.getCoords() + array)
+        if replace is False:
+            atoms.addCoordset(atoms.getCoords() + array * scale)
+        else:
+            atoms.setCoords(atoms.getCoords() + array * scale)
+
+

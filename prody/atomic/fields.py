@@ -11,7 +11,7 @@ below.  :class:`Atomic` classes, such as :class:`.Selection`, offer ``get`` and
 
 from numpy import array
 
-from prody.utilities import wrapText
+from prody.utilities import wrapText, DTYPE
 
 from .flags import FIELDS as FLAG_FIELDS
 
@@ -74,7 +74,7 @@ class Field(object):
             READONLY.add(self.name)
 
     def getDocstr(self, meth, plural=True, selex=True):
-        """Return documentation string for the field."""
+        """Returns documentation string for the field."""
 
         assert meth in ('set', 'get', '_get'), "meth must be 'set' or 'get'"
         assert isinstance(plural, bool), 'plural must be a boolean'
@@ -118,8 +118,6 @@ class Field(object):
 
 HVNONE = ['_hv', 'segindex', 'chindex', 'resindex']
 
-DTYPE = array(['a']).dtype.char  # 'S' for PY2K and 'U' for PY3K
-
 ATOMIC_FIELDS = {
     'name':      Field('name', DTYPE + '6', selstr=('name CA CB',)),
     'altloc':    Field('altloc', DTYPE + '1',
@@ -127,7 +125,7 @@ ATOMIC_FIELDS = {
                        selstr=('altloc A B', 'altloc _'),),
     'anisou':    Field('anisou', float, doc='anisotropic temperature factor',
                        ndim=2),
-    'chain':     Field('chain', DTYPE + '1',  doc='chain identifier',
+    'chain':     Field('chain', DTYPE + '3',  doc='chain identifier',
                        meth='Chid', none=HVNONE, synonym='chid',
                        selstr=('chain A', 'chid A B C', 'chain _')),
     'element':   Field('element', DTYPE + '2', doc='element symbol',
@@ -145,6 +143,21 @@ ATOMIC_FIELDS = {
                        doc='secondary structure assignment',
                        meth='Secstr', synonym='secstr',
                        selstr=('secondary H E', 'secstr H E'),
+                       ),
+    'secid':     Field('secid', DTYPE + '3',
+                       doc='secondary structure identifier',
+                       meth='Secid',
+                       selstr=('secid A B', 'secid 1 2')
+                       ),
+    'secclass':  Field('secclass', int,
+                       doc='secondary structure class',
+                       meth='Secclass', meth_pl='Secclasses',
+                       selstr=('secclass 2', 'secclass -1')
+                       ),
+    'secindex':  Field('secindex', int,
+                       doc='secondary structure index',
+                       meth='Secindex', meth_pl='Secindices',
+                       selstr=('secindex 2')
                        ),
     'segment':   Field('segment', DTYPE + '6', doc='segment name',
                        meth='Segname',
@@ -208,8 +221,8 @@ ATOMIC_FIELDS = {
                        readonly=True, call=['_fragment'], synonym='fragment',
                        desc='Fragment indices are assigned to connected '
                             'subsets of atoms.  Bonds needs to be set using '
-                            ':meth:`.AtomGroup.setBonds` method.  Fragment '
-                            'indices start from zero, are incremented by '
+                            ':meth:`.AtomGroup.setBonds` or :meth:`.AtomGroup.inferBonds`. '
+                            'Fragment indices start from zero, are incremented by '
                             'one, and are assigned in the order of appearance '
                             'in :class:`.AtomGroup` instance.'),
     'numbonds':  Field('numbonds', int, meth_pl='Numbonds',

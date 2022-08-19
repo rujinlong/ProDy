@@ -126,7 +126,7 @@ from .modeset import ModeSet
 
 
 def pathVMD(*path):
-    """Return VMD path, or set it to be a user specified *path*."""
+    """Returns VMD path, or set it to be a user specified *path*."""
 
     if not path:
         path = SETTINGS.get('vmd', None)
@@ -209,13 +209,25 @@ NMD_LABEL_MAP = {
 }
 
 
-def parseNMD(filename, type=None):
-    """Return :class:`.NMA` and :class:`.AtomGroup` instances storing data
-    parsed from *filename* in :file:`.nmd` format.  Type of :class:`.NMA`
-    instance, e.g. :class:`.PCA`, :class:`.ANM`, or :class:`.GNM` will
-    be determined based on mode data."""
+def parseNMD(filename, type=NMA):
+    """Returns :class:`.NMA` and :class:`.AtomGroup` instances storing data
+    parsed from *filename* in :file:`.nmd` format. Type should be :class:`.NMA`
+    or a subclass such as :class:`.PCA`, :class:`.ANM`, or :class:`.GNM`."""
 
-    assert not isinstance(type, NMA), 'type must be NMA, ANM, GNM, or PCA'
+    if isinstance(type, str):
+        type = type.upper().strip()
+        if 'ANM' in type:
+            type = ANM
+        elif 'GNM' in type:
+            type = GNM
+        elif 'PCA' in type or 'EDA' in type:
+            type = PCA
+        elif type == 'NMA':
+            type = NMA
+        else:
+            type = None
+    if not issubclass(type, NMA): 
+        raise TypeError('type must be NMA, ANM, GNM, or PCA')
 
     atomic = {}
     atomic.update([(label, None) for label in NMD_LABEL_MAP])
@@ -228,7 +240,15 @@ def parseNMD(filename, type=None):
             try:
                 label, data = line.split(None, 1)
             except ValueError:
-                pass
+                try:
+                    label = line.strip()
+                    data = line[len(label):-1]
+                    LOGGER.warn('Blank data associated with label {0}'
+                                '.'.format(repr(label)))
+                except ValueError:
+                    LOGGER.warn('Could not process data associated with label {0}'
+                                '.'.format(repr(label)))
+                    pass
 
             if label == 'mode':
                 modes.append((i + 1, data))
@@ -238,6 +258,12 @@ def parseNMD(filename, type=None):
                 else:
                     LOGGER.warn('Data label {0} is found more than once in '
                                 '{1}.'.format(repr(label), repr(filename)))
+
+    for i, label in enumerate(NMD_LABEL_MAP.keys()):
+        if atomic[label] is None:
+            atomic[label] = (i + 1, None)
+            LOGGER.warn('The data label {0} was not found in '
+                        '{1}.'.format(repr(label), repr(filename)))
 
     name = atomic.pop('name', '')[1].strip() or splitext(split(filename)[1])[0]
     ag = AtomGroup(name)
@@ -252,7 +278,7 @@ def parseNMD(filename, type=None):
             LOGGER.warn('Coordinate data in {0} at line {1} is corrupt '
                         'and will be omitted.'.format(repr(filename), line))
         else:
-            n_atoms = dof / 3
+            n_atoms = dof // 3
             coords = coords.reshape((n_atoms, 3))
             ag.setCoords(coords)
 
@@ -261,16 +287,25 @@ def parseNMD(filename, type=None):
     for label, data in atomic.items():  # PY3K: OK
         if data is None:
             continue
+        
         line, data = data
-        data = data.split()
+        if data is None:
+            continue
+
+        if len(data) == n_atoms:
+            data = ['']*n_atoms
+        else:
+            data = data.split()
+
         if n_atoms is None:
             n_atoms = len(data)
             dof = n_atoms * 3
         elif len(data) != n_atoms:
             LOGGER.warn('Data with label {0} in {1} at line {2} is '
-                        'corrupt, expected {2} values, parsed {3}.'.format(
+                        'corrupt, expected {3} values, parsed {4}.'.format(
                         repr(label), repr(filename), line, n_atoms, len(data)))
             continue
+
         label = NMD_LABEL_MAP[label]
         data = np.array(data, dtype=ATOMIC_FIELDS[label].dtype)
         ag.setData(label, data)
@@ -323,13 +358,10 @@ def parseNMD(filename, type=None):
     else:
         eigvals = eigvals[:, 1] ** 2
 
-    if is3d:
-        if eigvals is not None and np.all(eigvals[:-1] >= eigvals[1:]):
-            nma = PCA(name)
-        else:
-            nma = ANM(name)
-    else:
-        nma = GNM(name)
+    nma = type(name)
+    if type != PCA:
+        eigvals = 1./eigvals
+
     if count != array.shape[1]:
         array = array[:, :count].copy()
 
@@ -338,7 +370,7 @@ def parseNMD(filename, type=None):
 
 
 def writeNMD(filename, modes, atoms):
-    """Return *filename* that contains *modes* and *atoms* data in NMD format
+    """Returns *filename* that contains *modes* and *atoms* data in NMD format
     described in :ref:`nmd-format`.  :file:`.nmd` extension is appended to
     filename, if it does not have an extension.
 
@@ -347,6 +379,9 @@ def writeNMD(filename, modes, atoms):
        #. If a :class:`.Vector` instance is given, it will be normalized
           before it is written. It's length before normalization will be
           written as the scaling factor of the vector."""
+
+    if not '.nmd' in filename:
+        filename += '.nmd'
 
     if not isinstance(modes, (NMA, ModeSet, Mode, Vector)):
         raise TypeError('modes must be NMA, ModeSet, Mode, or Vector, '

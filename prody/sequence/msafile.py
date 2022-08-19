@@ -10,29 +10,42 @@ from numpy import array, fromstring, empty
 
 from .sequence import splitSeqLabel, Sequence
 
-from prody import LOGGER
-from prody.utilities import openFile
+from prody import LOGGER, PY3K
+from prody.utilities import openFile, isListLike
 
 __all__ = ['MSAFile', 'splitSeqLabel', 'parseMSA', 'writeMSA']
+
+if PY3K:
+    basestring = str
 
 FASTA = 'FASTA'
 SELEX = 'SELEX'
 STOCKHOLM = 'Stockholm'
+CLUSTAL = 'CLUSTAL'
+PIR = 'PIR'
 MSAFORMATS = {
     FASTA.lower(): FASTA,
     SELEX.lower(): SELEX,
     STOCKHOLM.lower(): STOCKHOLM,
+    CLUSTAL.lower(): CLUSTAL,
+    PIR.lower(): PIR,
 }
 MSAEXTMAP = {
     FASTA: '.fasta',
     SELEX: '.slx',
     STOCKHOLM: '.sth',
+    CLUSTAL: '.aln',
+    PIR: '.ali',
     FASTA.lower(): '.fasta',
     SELEX.lower(): '.slx',
     STOCKHOLM.lower(): '.sth',
+    CLUSTAL.lower(): '.aln', 
+    PIR.lower(): '.ali',
     '.sth': STOCKHOLM,
     '.slx': SELEX,
-    '.fasta': FASTA
+    '.fasta': FASTA,
+    '.aln': CLUSTAL,
+    '.ali': PIR,
 }
 
 WSJOIN = ' '.join
@@ -42,26 +55,21 @@ NUMLINES = 1000
 LEN_FASTA_LINE = 60
 LEN_SELEX_LABEL = 31
 
-try:
-    range = xrange
-except NameError:
-    pass
-
 
 class MSAFile(object):
 
-    """Handle MSA files in FASTA, SELEX and Stockholm formats."""
+    """Handle MSA files in FASTA, SELEX, CLUSTAL and Stockholm formats."""
 
     def __init__(self, msa, mode='r', format=None, aligned=True, **kwargs):
         """*msa* may be a filename or a stream.  Multiple sequence alignments
         can be read from or written in FASTA (:file:`.fasta`), Stockholm
-        (:file:`.sth`), or SELEX (:file:`.slx`) *format*.  For spesified
-        extensions, *format* argument is not needed.  If *aligned* is
+        (:file:`.sth`), CLUSTAL (:file:`.aln`), or SELEX (:file:`.slx`) *format*.  
+        For specified extensions, *format* argument is not needed. If *aligned* is
         **True**, unaligned sequences in the file or stream will cause an
         :exc:`IOError` exception.  *filter*, a function that returns a
-        boolean, can be used for filtering sequences, see :meth:`setFilter`
+        boolean, can be used for filtering sequences, see :meth:`MSAFile.setFilter`
         for details.  *slice* can be used to slice sequences, and is applied
-        after filtering, see :meth:`setSlice` for details."""
+        after filtering, see :meth:`MSAFile.setSlice` for details."""
 
         if mode[0] not in 'rwa':
             raise ValueError("mode string must be one of 'r', 'w', or 'a', "
@@ -245,20 +253,20 @@ class MSAFile(object):
     closed = property(_isClosed, None, doc="True for closed file.")
 
     def _getFormat(self):
-        """Return format of the MSA file."""
+        """Returns format of the MSA file."""
 
         return self._format
 
     format = property(_getFormat, None, doc="Format of the MSA file.")
 
     def reset(self):
-        """Return to the beginning of the file."""
+        """Returns to the beginning of the file."""
 
         self._readline()
         self._iterator = self._iter()
 
     def isAligned(self):
-        """Return **True** if MSA is aligned."""
+        """Returns **True** if MSA is aligned."""
 
         return self._aligned
 
@@ -349,7 +357,7 @@ class MSAFile(object):
     }
 
     def getTitle(self):
-        """Return title of the instance."""
+        """Returns title of the instance."""
 
         return self._title
 
@@ -359,17 +367,17 @@ class MSAFile(object):
         self._title = str(title)
 
     def getFilename(self):
-        """Return filename, or **None** if instance is handling a stream."""
+        """Returns filename, or **None** if instance is handling a stream."""
 
         return self._filename
 
     def getFormat(self):
-        """Return file format."""
+        """Returns file format."""
 
         return self._format
 
     def getFilter(self):
-        """Return function used for filtering sequences."""
+        """Returns function used for filtering sequences."""
 
         return self._filter
 
@@ -401,7 +409,7 @@ class MSAFile(object):
         self._filter = filter
 
     def getSlice(self):
-        """Return object used to slice sequences."""
+        """Returns object used to slice sequences."""
 
         return self._slice
 
@@ -465,10 +473,54 @@ class MSAFile(object):
         else:
             write(self._selex_line.format(label, sequence))
 
+def parseMSAHeader(filename, **kwargs):
+
+    try:
+        fileok = isfile(filename)
+    except TypeError:
+        raise TypeError('filename must be a string')
+    else:
+        if not fileok:
+            raise IOError('[Errno 2] No such file or directory: ' +
+                          repr(filename))
+
+    # if MSA is a compressed file or filter/slice is passed, use
+    #   Python parsers
+
+    LOGGER.timeit('_parsemsa')
+
+    title, ext = splitext(filename)
+    title = split(title)[1]
+    aligned = kwargs.get('aligned', True)
+    if (ext.lower() == '.gz' or 'filter' in kwargs or 'slice' in kwargs or
+            not aligned):
+        if ext.lower() == '.gz':
+            title = splitext(title)[0]
+    else:
+        filesize = getsize(filename)
+        format = MSAEXTMAP.get(splitext(filename)[1])
+
+    if format == STOCKHOLM:
+        from collections import defaultdict
+        lines = defaultdict(list)
+
+        stream = open(filename, 'r')
+
+        for loc, line in enumerate(stream):
+            startswith = line.split()[0]
+            if line[0] != '#':
+                break
+            lines[startswith].append((loc, line))
+
+        stream.close()
+    else:
+        raise TypeError('Only STOCKHOLM type MSAs are supported at present.')
+
+    return lines
 
 def parseMSA(filename, **kwargs):
-    """Return an :class:`.MSA` instance that stores multiple sequence alignment
-    and sequence labels parsed from Stockholm, SELEX, or FASTA format
+    """Returns an :class:`.MSA` instance that stores multiple sequence alignment
+    and sequence labels parsed from Stockholm, SELEX, CLUSTAL, PIR, or FASTA format
     *filename* file, which may be a compressed file. Uncompressed MSA files
     are parsed using C code at a fraction of the time it would take to parse
     compressed files in Python."""
@@ -496,7 +548,7 @@ def parseMSA(filename, **kwargs):
             not aligned):
         if ext.lower() == '.gz':
             title = splitext(title)[0]
-        msa = MSAFile(filename, split=False, **kwargs)
+        msa = MSAFile(filename, **kwargs)
         seqlist = []
         sappend = seqlist.append
         labels = []
@@ -530,15 +582,23 @@ def parseMSA(filename, **kwargs):
     else:
         filesize = getsize(filename)
         format = MSAEXTMAP.get(splitext(filename)[1])
+        format = kwargs.get('format', format)
 
         if format == FASTA:
             from .msaio import parseFasta as parser
+            msaarr = empty(filesize, '|S1')
         elif format == SELEX or format == STOCKHOLM:
             from .msaio import parseSelex as parser
+            msaarr = empty(filesize, '|S1')
+        elif format == CLUSTAL:
+            parser = parseClustal
+            msaarr = []
+        elif format == PIR:
+            parser = parsePIR
+            msaarr = []
         else:
             raise IOError('MSA file format is not recognized from the '
                           'extension')
-        msaarr = empty(filesize, '|S1')
         msaarr, labels, mapping, lcount = parser(filename, msaarr)
         if lcount != len(msaarr):
             LOGGER.warn('Failed to parse {0} sequence labels.'
@@ -555,13 +615,275 @@ def parseMSA(filename, **kwargs):
                       .format(*msaarr.shape), '_parsemsa')
     return msa
 
+def parseClustal(filename, msaarr):
+    """
+    Parses a CLUSTAL format (:file:`.aln`) alignment file.
+    """
+    msafile = open(filename,'r')
+    lines = msafile.readlines()
+    msafile.close()
+
+    msa_dict = {}
+    keys = []
+    for line in lines:
+        foundBadItem = False
+        try:
+            key = line.strip().split()[0]
+            seq = line.strip().split()[1]
+        except:
+            continue
+        for badItem in ['*', ' ', ':', 'CLUSTAL', '.']:
+            if badItem in key:
+                foundBadItem = True
+                continue
+        if foundBadItem:
+            continue
+        if not key in keys:
+            keys.append(key)
+            msa_dict[key] = seq
+        else:
+            msa_dict[key] = msa_dict[key] + seq
+
+    for key in keys:
+        msaarr.append(list(msa_dict[key]))
+
+    return array(msaarr), keys, None, len(keys)
+
+def parsePIR(filename, msaarr):
+    msafile = open(filename,'r')
+    lines = msafile.readlines()
+    msafile.close()
+
+    labels = []
+    i = -1
+
+    for line in lines:
+        if line.startswith('>P1;'):
+            labels.append(line.strip()[len('>P1;'):])
+            i += 1
+            msaarr.append([])
+        elif line.startswith('s') or line.strip() == '':
+            pass
+        else:
+            msaarr[i].append(line.strip())
+
+    for i in range(len(msaarr)):
+        msaarr[i] = list(''.join(msaarr[i]))
+
+    return array(msaarr), labels, None, len(labels)
+
+def writeClustal(filename, msa):
+    """A simple writer for CLUSTAL format alignments.
+
+    This lacks the characters showing degree of conservation
+    but otherwise conforms to the CLUSTAL format standards."""
+
+    msafile = open(filename, 'w')
+
+    msafile.write('CLUSTALW file written by ProDy\n\n')
+
+    for j in range(msa.numResidues()/60):
+        for i in range(msa.numSequences()):
+            sequence = str(msa[i])
+            msafile.write(msa.getLabel(i) + ' '*(16-len(msa.getLabel(i))))
+            msafile.write(sequence[j*60:(j+1)*60])
+            msafile.write('\n')
+        msafile.write('\n\n')
+
+    for i in range(msa.numSequences()):
+        sequence = str(msa[i])
+        msafile.write(msa.getLabel(i) + ' '*(16-len(msa.getLabel(i))))
+        msafile.write(sequence[(j+1)*60:])
+        msafile.write('\n')
+
+    msafile.close()
+    return
+
+def writePIR(filename, msa, **kwargs):
+    """A function to write PIR format alignments for use with MODELLER.
+
+    :arg filename: The name of the file to be written including .ali
+    :type filename: str
+
+    :arg msa: a multiple sequence alignment in :class:`MSA` format
+    :type msa: :class:`MSA` instance
+
+    :arg chain_sep: chain separation character or list of them
+        default is '/'
+    :type chain_sep: str, list
+
+    :arg types: a list of strings for field 1, PIR types (Sequence or StructureX)
+        default is all Sequence
+    :type types: list
+
+    :arg labels: a list of strings for field 2, sequence labels
+        default is to take them from msa
+    :type labels: list
+
+    :arg first_resnums: contents for field 3, residue number for the first residue.
+        This should be a list of strings each having length 5, 
+        default is all 'FIRST'
+    :type first_resnums: list
+
+    :arg first_chains: contents for field 4, chain ID for the first residue
+        This should be a list of strings each having length 1, 
+        default is all '@'
+    :type first_chains: list
+
+    :arg last_resnums: contents for field 5, residue number for the last residue.
+        This should be a list of strings each having length 5, 
+        default is all 'LAST '
+    :type last_resnums: list
+
+    :arg last_chains: contents for field 6, chain ID for the last residue
+        This should be a list of strings each having length 1, 
+        default is all ' '
+    :type first_chains: list
+
+    :arg protein_names: list of strings for field 7
+        default is all ''
+    :type protein_names: list
+
+    :arg protein_sources: list of strings for field 8
+        default is all ''
+    :type protein_sources: list
+
+    :arg resolutions: list of strings for field 9
+        default is all ''
+    :type resolutions: list
+
+    :arg r_factors: list of strings for field 10
+        default is all ''
+    :type r_factors: list
+    """
+    msafile = open(filename, 'w')
+
+    chain_sep = kwargs.get('chain_sep', '/')
+    if isinstance(chain_sep, basestring): 
+        chain_sep = [chain_sep] * msa.numSequences()
+    elif isListLike(chain_sep) and isinstance(chain_sep[0], basestring):
+        if len(chain_sep) != msa.numSequences():
+            raise ValueError('There should be an entry in chain_sep list for each sequence in msa')
+    else:
+        raise TypeError('chain_sep should be a string or list of strings')
+
+    types = kwargs.get('types', 'Sequence')
+    if isinstance(types, basestring): 
+        types = [types] * msa.numSequences()
+    elif isListLike(types) and isinstance(types[0], basestring):
+        if len(types) != msa.numSequences():
+            raise ValueError('There should be an entry in types list for each sequence in msa')
+    else:
+        raise TypeError('types should be a string or list of strings')
+
+    labels = kwargs.get('labels', None)
+    if labels is None: 
+        labels = []
+        for sequence in msa:
+            labels.append(sequence.getLabel())
+    elif isListLike(labels) and isinstance(labels[0], basestring):
+        if len(labels) != msa.numSequences():
+            raise ValueError('There should be an entry in labels list for each sequence in msa')
+    else:
+        raise TypeError('labels should be a string or list of strings')
+
+    first_resnums = kwargs.get('first_resnums', 'FIRST')
+    if isinstance(first_resnums, basestring) and len(first_resnums) == 5: 
+        first_resnums = [first_resnums] * msa.numSequences()
+    elif isListLike(first_resnums) and isinstance(first_resnums, basestring):
+        if len(first_resnums) != msa.numSequences():
+            raise ValueError('There should be an entry in first_resnums list for each sequence in msa')
+    else:
+        raise TypeError('first_resnums should be a string of length 5 or list of them')
+
+    first_chains = kwargs.get('first_chains', '@')
+    if isinstance(first_chains, basestring) and len(first_chains) == 1: 
+        first_chains = [first_chains] * msa.numSequences()
+    elif isListLike(first_chains) and isinstance(first_chains, basestring):
+        if len(first_chains) != msa.numSequences():
+            raise ValueError('There should be an entry in first_chains list for each sequence in msa')
+    else:
+        raise TypeError('first_chains should be a string of length 1 or list of them')
+
+    last_resnums = kwargs.get('last_resnums', 'LAST ')
+    if isinstance(last_resnums, basestring) and len(last_resnums) == 5: 
+        last_resnums = [last_resnums] * msa.numSequences()
+    elif isListLike(last_resnums) and isinstance(last_resnums, basestring):
+        if len(last_resnums) != msa.numSequences():
+            raise ValueError('There should be an entry in last_resnums list for each sequence in msa')
+    else:
+        raise TypeError('last_resnums should be a string of length 5 or list of them')
+
+    last_chains = kwargs.get('last_chains', ' ')
+    if isinstance(last_chains, basestring) and len(last_chains) == 1: 
+        last_chains = [last_chains] * msa.numSequences()
+    elif isListLike(last_chains) and isinstance(last_chains, basestring):
+        if len(last_chains) != msa.numSequences():
+            raise ValueError('There should be an entry in last_chains list for each sequence in msa')
+    else:
+        raise TypeError('last_chains should be a string of length 1 or list of them')
+
+    protein_names = kwargs.get('protein_names', '')
+    if isinstance(protein_names, basestring): 
+        protein_names = [protein_names] * msa.numSequences()
+    elif isListLike(protein_names) and isinstance(protein_names, basestring):
+        if len(protein_names) != msa.numSequences():
+            raise ValueError('There should be an entry in protein_names list for each sequence in msa')
+    else:
+        raise TypeError('protein_names should be a string or list of strings')
+
+    protein_sources = kwargs.get('protein_sources', '')
+    if isinstance(protein_sources, basestring): 
+        protein_sources = [protein_sources] * msa.numSequences()
+    elif isListLike(protein_sources) and isinstance(protein_sources, basestring):
+        if len(protein_sources) != msa.numSequences():
+            raise ValueError('There should be an entry in protein_sources list for each sequence in msa')
+    else:
+        raise TypeError('protein_sources should be a string or list of strings')
+
+    resolutions = kwargs.get('resolutions', '')
+    if isinstance(resolutions, basestring): 
+        resolutions = [resolutions] * msa.numSequences()
+    elif isListLike(resolutions) and isinstance(resolutions, basestring):
+        if len(resolutions) != msa.numSequences():
+            raise ValueError('There should be an entry in resolutions list for each sequence in msa')
+    else:
+        raise TypeError('resolutions should be a string or list of strings')
+
+    r_factors = kwargs.get('r_factors', '')
+    if isinstance(r_factors, basestring): 
+        r_factors = [r_factors] * msa.numSequences()
+    elif isListLike(r_factors) and isinstance(r_factors, basestring):
+        if len(r_factors) != msa.numSequences():
+            raise ValueError('There should be an entry in r_factors list for each sequence in msa')
+    else:
+        raise TypeError('r_factors should be a string or list of strings')
+
+    for i, sequence in enumerate(msa):
+        sequence = str(sequence).replace(chain_sep[i],'/')
+        msafile.write('>P1;' + labels[i] + '\n')
+        msafile.write(types[i] + ':' + labels[i] + ':')
+        msafile.write(first_resnums[i] + ':' + first_chains[i] + ':')
+        msafile.write(last_resnums[i] + ':' + last_chains[i] + ':')
+        msafile.write(protein_names[i] + ':' + protein_sources[i] + ':')
+        msafile.write(resolutions[i] + ':' + r_factors[i])
+        msafile.write('\n')
+
+        for j in range(len(sequence)/60):
+            msafile.write(sequence[j*60:(j+1)*60] + '\n')
+        msafile.write(sequence[(j+1)*60:] + '*\n\n')
+
+    msafile.close()
+    return
 
 def writeMSA(filename, msa, **kwargs):
-    """Return *filename* containing *msa*, a :class:`.MSA` or :class:`.MSAFile`
+    """Returns *filename* containing *msa*, a :class:`.MSA` or :class:`.MSAFile`
     instance, in the specified *format*, which can be *SELEX*, *Stockholm*, or
     *FASTA*.  If *compressed* is **True** or *filename* ends with :file:`.gz`,
     a compressed file will be written.  :class:`.MSA` instances will be written
-    using C function into uncompressed files."""
+    using C function into uncompressed files.
+    
+    Can also write *CLUSTAL* or *PIR* format files using Python functions."""
 
     fntemp, ext = splitext(filename)
     ext = ext.lower()
@@ -592,7 +914,7 @@ def writeMSA(filename, msa, **kwargs):
         try:
             msa.getFormat(), msa.getFilename(), msa.getFilter()
         except AttributeError:
-            raise ValueError('msa must be an MSA or MSAFile instance, not '
+            raise ValueError('msa must be an MSA or MSAFile instance, not {0}'
                              .format(type(msa).__name__))
         else:
             seqiter = msa
@@ -612,6 +934,10 @@ def writeMSA(filename, msa, **kwargs):
             from .msaio import writeFasta
             writeFasta(filename, msa._labels, seqarr,
                        kwargs.get('line_length', LEN_FASTA_LINE))
+        elif format == CLUSTAL:
+            writeClustal(filename, msa)
+        elif format == PIR:
+            writePIR(filename, msa, **kwargs)
         else:
             from .msaio import writeSelex
             writeSelex(filename, msa._labels, seqarr,

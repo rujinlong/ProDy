@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """This module defines a pointer class for handling subsets of normal modes."""
 
-from numpy import array
+from numpy import ndarray, array, arange, diag, dot
 
 __all__ = ['ModeSet']
 
@@ -33,45 +33,70 @@ class ModeSet(object):
     def __str__(self):
         return '{0} modes from {1}'.format(len(self._indices),
                                                str(self._model))
+    
+    def __getitem__(self, index):
+        """A list or tuple of integers can be used for indexing."""
+
+        if isinstance(index, slice):
+            indices = arange(*index.indices(len(self)))
+            if len(indices) > 1:
+                return ModeSet(self._model, self._indices[indices])
+            elif len(indices) > 0:
+                return self._model._getMode(self._indices[indices[0]])
+        elif isinstance(index, (list, tuple, ndarray)):
+            if len(index) == 1:
+                return self._model._getMode(self._indices[index[0]])
+            return ModeSet(self._model, self._indices[index])
+        try:
+            index = int(index)
+        except Exception:
+            raise IndexError('indices must be int, slice, list, or tuple')
+        else:
+            return self._model._getMode(self._indices[index])
 
     def is3d(self):
-        """Return **True** is model is 3-dimensional."""
+        """Returns **True** is model is 3-dimensional."""
 
         return self._model._is3d
 
     def numAtoms(self):
-        """Return number of atoms."""
+        """Returns number of atoms."""
 
-        return self._model._n_atoms
+        return self._model.numAtoms()
 
     def numModes(self):
-        """Return number of modes in the instance (not necessarily maximum
+        """Returns number of modes in the instance (not necessarily maximum
         number of possible modes)."""
 
         return len(self._indices)
 
     def numDOF(self):
-        """Return number of degrees of freedom."""
+        """Returns number of degrees of freedom."""
 
-        return self._model._dof
+        return self._model.numDOF()
+
+    def numEntries(self):
+        """Returns number of entries in one eigenvector."""
+
+        return self._getArray().shape[0]
 
     def getTitle(self):
-        """Return title of the mode set."""
+        """Returns title of the mode set."""
 
         return str(self)
 
     def getModel(self):
-        """Return the model that the modes belongs to."""
+        """Returns the model that the modes belongs to."""
 
         return self._model
 
     def getIndices(self):
-        """Return indices of modes in the mode set."""
+        """Returns indices of modes in the mode set."""
 
         return self._indices
 
     def getEigvals(self):
-        """Return eigenvalues.  For :class:`.PCA` and :class:`.EDA` models
+        """Returns eigenvalues.  For :class:`.PCA` and :class:`.EDA` models
         built using coordinate data in Å, unit of eigenvalues is |A2|.  For
         :class:`.ANM` and :class:`.GNM`, on the other hand, eigenvalues are
         in arbitrary or relative units but they correlate with stiffness of
@@ -80,21 +105,29 @@ class ModeSet(object):
         return self._model._eigvals[self._indices]
 
     def getVariances(self):
-        """Return variances.  For :class:`.PCA` and :class:`.EDA` models
+        """Returns variances.  For :class:`.PCA` and :class:`.EDA` models
         built using coordinate data in Å, unit of variance is |A2|.  For
         :class:`.ANM` and :class:`.GNM`, on the other hand, variance is the
         inverse of the eigenvalue, so it has arbitrary or relative units."""
 
         return self._model._vars[self._indices]
 
-    def getArray(self):
-        """Return a copy of eigenvectors array."""
+    def getCovariance(self):
+        """Returns covariance matrix. It will be calculated using available modes."""
 
-        return self._model._array[:, self._indices]
+        V = self.getEigvecs()
+        D = diag(self.getVariances())
+        return dot(V, dot(D, V.T))
+
+    def getArray(self):
+        """Returns a copy of eigenvectors array."""
+
+        return self._model.getArray()[:, self._indices].copy()
 
     getEigvecs = getArray
 
     def _getArray(self):
-        """Return eigenvectors array."""
+        """Returns eigenvectors array."""
 
-        return self._model._array[:, self._indices]
+        return self._model._getArray()[:, self._indices]
+        

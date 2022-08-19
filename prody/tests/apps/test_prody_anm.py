@@ -5,6 +5,11 @@ from prody.tests import TestCase, skipIf, skipUnless
 
 from numpy.testing import *
 
+try:
+    import numpy.testing.decorators as dec
+except ImportError:
+    from numpy.testing import dec
+
 from prody.tests.datafiles import TEMPDIR, pathDatafile
 
 from prody.apps import prody_parser

@@ -4,7 +4,7 @@ arbitrary order.
 
 .. _atommaps:
 
-How AtomMap's work
+How AtomMap works
 ===============================================================================
 
 :class:`AtomMap` class adds great flexibility to manipulating atomic data.
@@ -70,14 +70,9 @@ i.e. ``""``.
 
 """
 
-try:
-    from sys import maxint as DUMMY
-except ImportError:
-    from sys import maxsize as DUMMY
-
 from numpy import arange, array, ones, zeros, dtype
 
-from prody.utilities import rangeString
+from prody.utilities import rangeString, copy
 
 from .atom import Atom
 from .fields import ATOMIC_FIELDS
@@ -86,6 +81,7 @@ from .pointer import AtomPointer
 
 __all__ = ['AtomMap']
 
+DUMMY = -1
 
 class AtomMap(AtomPointer):
 
@@ -142,7 +138,7 @@ class AtomMap(AtomPointer):
                 dummies = (indices == DUMMY).nonzero()[0]
                 if len(dummies):
                     self._dummies = dummies
-                    self._mapping = (indices < DUMMY).nonzero()[0]
+                    self._mapping = (indices > DUMMY).nonzero()[0]
                     self._indices = indices[self._mapping]
                     self._idarray = indices
                 else:
@@ -162,8 +158,8 @@ class AtomMap(AtomPointer):
                 mapping = array(mapping, int)
                 if dummy_array:
                     dummies = array(dummies, int)
-            if any(mapping[1:] - mapping[:-1] < 0):
-                raise ValueError('mapping must be an ordered array')
+            #if any(mapping[1:] - mapping[:-1] < 0):
+            #    raise ValueError('mapping must be an ordered array')
             self._len = len(indices)
             if dummy_array:
                 self._indices = indices
@@ -215,7 +211,7 @@ class AtomMap(AtomPointer):
                        intarrays=True, dummies=self.numDummies())
 
     def getTitle(self):
-        """Return title of the instance."""
+        """Returns title of the instance."""
 
         return self._title
 
@@ -225,22 +221,22 @@ class AtomMap(AtomPointer):
         self._title = str(title)
 
     def numAtoms(self, flag=None):
-        """Return number of atoms."""
+        """Returns number of atoms."""
 
         return len(self._getSubset(flag)) if flag else self._len
 
     def iterAtoms(self):
-        """Yield atoms, and ``None`` for dummies."""
+        """Yield atoms, and **None** for dummies."""
 
         ag = self._ag
         acsi = self.getACSIndex()
         for index in self.getIndices():
-            yield Atom(ag, index, acsi) if index < DUMMY else None
+            yield Atom(ag, index, acsi) if index > DUMMY else None
 
     __iter__ = iterAtoms
 
     def getCoords(self):
-        """Return a copy of coordinates from the active coordinate set."""
+        """Returns a copy of coordinates from the active coordinate set."""
 
         coords = self._ag._getCoordsets()
         if coords is not None:
@@ -265,7 +261,7 @@ class AtomMap(AtomPointer):
 
 
     def getCoordsets(self, indices=None):
-        """Return coordinate set(s) at given *indices*, which may be an integer
+        """Returns coordinate set(s) at given *indices*, which may be an integer
         or a list/array of integers."""
 
         coords = self._ag._getCoordsets()
@@ -305,7 +301,7 @@ class AtomMap(AtomPointer):
     _iterCoordsets = iterCoordsets
 
     def getData(self, label):
-        """Return a copy of data associated with *label*, if it is present."""
+        """Returns a copy of data associated with *label*, if it is present."""
 
         data = self._ag._getData(label)
         if data is not None:
@@ -316,7 +312,7 @@ class AtomMap(AtomPointer):
     _getData = getData
 
     def getFlags(self, label):
-        """Return a copy of atom flags for given *label*, or **None** when
+        """Returns a copy of atom flags for given *label*, or **None** when
         flags for *label* is not set."""
 
         if label == 'dummy':
@@ -342,42 +338,47 @@ class AtomMap(AtomPointer):
         return self._idarray[self._getFlags(label)]
 
     def getIndices(self):
-        """Return a copy of indices of atoms, with maximum integer value
+        """Returns a copy of indices of atoms, with maximum integer value
         dummies."""
 
-        return self._idarray.copy()
+        return copy(self._idarray)
 
     def _getIndices(self):
-        """Return indices of atoms, with maximum integer value dummies."""
+        """Returns indices of atoms, with maximum integer value dummies."""
 
         return self._idarray
 
     def getMapping(self):
-        """Return a copy of mapping of indices."""
+        """Returns a copy of mapping of indices."""
 
         mapping = self._mapping
         return arange(self._len) if mapping is None else mapping.copy()
 
     def _getMapping(self):
-        """Return mapping of indices."""
+        """Returns mapping of indices."""
 
         mapping = self._mapping
         return arange(self._len) if mapping is None else mapping
 
     def numMapped(self):
-        """Return number of mapped atoms."""
+        """Returns number of mapped atoms."""
 
         return len(self._indices)
 
     def numDummies(self):
-        """Return number of dummy atoms."""
+        """Returns number of dummy atoms."""
 
         return 0 if self._dummies is None else len(self._dummies)
 
     def getSelstr(self):
-        """Return selection string that selects mapped atoms."""
+        """Returns selection string that selects mapped atoms."""
 
         return 'index ' + rangeString(self._indices)
+
+    def getHierView(self, **kwargs):
+        """Returns a hierarchical view of the this chain."""
+
+        return HierView(self, **kwargs)
 
 
 for fname, field in ATOMIC_FIELDS.items():

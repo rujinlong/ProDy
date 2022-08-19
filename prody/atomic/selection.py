@@ -6,8 +6,6 @@ from .subset import AtomSubset
 
 __all__ = ['Selection']
 
-SELECT = None
-
 ellipsis = lambda s: s[:15] + '...' + s[-15:] if len(s) > 33 else s
 
 
@@ -36,7 +34,7 @@ class Selection(AtomSubset):
             if n_csets == 1:
                 return ('<Selection: {0} from {1} ({2} atoms)>'
                         ).format(repr(selstr), self._ag.getTitle(),
-                                 len(self), n_csets)
+                                 len(self))
             else:
                 return ('<Selection: {0} from {1} ({2} atoms; '
                         'active #{3} of {4} coordsets)>'
@@ -47,17 +45,27 @@ class Selection(AtomSubset):
                     'coordinates)>').format(repr(selstr), self._ag.getTitle(),
                                             len(self))
 
+    def __getitem__(self, index):
+        if isinstance(index, (str, tuple)):
+            return self.getHierView()[index]
+        else:
+            try:
+                index = self._indices[index]
+                return self._ag[index]
+            except:
+                raise TypeError('invalid index')
+
     def __str__(self):
 
         return 'Selection {0}'.format(repr(ellipsis(self._selstr)))
-
+    
     def getSelstr(self):
-        """Return selection string that selects this atom subset."""
+        """Returns selection string that selects this atom subset."""
 
         return self._selstr
 
     def getHierView(self, **kwargs):
-        """Return a hierarchical view of the atom selection."""
+        """Returns a hierarchical view of the atom selection."""
 
         return HierView(self, **kwargs)
 

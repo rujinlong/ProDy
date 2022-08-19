@@ -3,19 +3,18 @@
 (ANM) calculations."""
 
 import numpy as np
+from numbers import Integral
 
 from prody import LOGGER
 from prody.atomic import Atomic, AtomGroup
 from prody.proteins import parsePDB
-from prody.utilities import importLA, checkCoords
+from prody.utilities import checkCoords, solveEig
 from prody.kdtree import KDTree
 
-from .nma import NMA
-from .gnm import GNMBase, ZERO, checkENMParameters
+from .nma import NMA, MaskedNMA
+from .gnm import GNMBase, checkENMParameters
 
-__all__ = ['ANM', 'calcANM']
-
-#dummy change
+__all__ = ['ANM', 'MaskedANM', 'calcANM']
 
 class ANMBase(NMA):
 
@@ -29,19 +28,25 @@ class ANMBase(NMA):
 
     def _reset(self):
 
-        GNMBase._reset(self)
+        super(ANMBase, self)._reset()
+        self._cutoff = None
+        self._gamma = None
         self._hessian = None
         self._is3d = True
+    
+    def _clear(self):
+        self._trace = None
+        self._cov = None
 
     def getHessian(self):
-        """Return a copy of the Hessian matrix."""
+        """Returns a copy of the Hessian matrix."""
 
         if self._hessian is None:
             return None
-        return self._hessian.copy()
+        return self._getHessian().copy()
 
     def _getHessian(self):
-        """Return the Hessian matrix."""
+        """Returns the Hessian matrix."""
 
         return self._hessian
 
@@ -63,8 +68,8 @@ class ANMBase(NMA):
         self._reset()
         self._hessian = hessian
         self._dof = hessian.shape[0]
-        self._n_atoms = self._dof / 3
-
+        self._n_atoms = self._dof // 3
+        
     def buildHessian(self, coords, cutoff=15., gamma=1., **kwargs):
         """Build Hessian matrix for given coordinate set.
 
@@ -107,10 +112,12 @@ class ANMBase(NMA):
         self._cutoff = cutoff
         self._gamma = g
         n_atoms = coords.shape[0]
+
         dof = n_atoms * 3
         LOGGER.timeit('_anm_hessian')
 
-        if kwargs.get('sparse', False):
+        sparse = kwargs.get('sparse', False)
+        if sparse:
             try:
                 from scipy import sparse as scipy_sparse
             except ImportError:
@@ -143,8 +150,8 @@ class ANMBase(NMA):
                     hessian[res_j3:res_j33, res_j3:res_j33] - super_element
                 kirchhoff[i, j] = -g
                 kirchhoff[j, i] = -g
-                kirchhoff[i, i] = kirchhoff[i, i] - g
-                kirchhoff[j, j] = kirchhoff[j, j] - g
+                kirchhoff[i, i] = kirchhoff[i, i] + g
+                kirchhoff[j, j] = kirchhoff[j, j] + g
         else:
             cutoff2 = cutoff * cutoff
             for i in range(n_atoms):
@@ -169,8 +176,13 @@ class ANMBase(NMA):
                         hessian[res_j3:res_j33, res_j3:res_j33] - super_element
                     kirchhoff[i, j] = -g
                     kirchhoff[j, i] = -g
-                    kirchhoff[i, i] = kirchhoff[i, i] - g
-                    kirchhoff[j, j] = kirchhoff[j, j] - g
+                    kirchhoff[i, i] = kirchhoff[i, i] + g
+                    kirchhoff[j, j] = kirchhoff[j, j] + g
+
+        if sparse:
+            kirchhoff = kirchhoff.tocsr()
+            hessian = hessian.tocsr()
+
         LOGGER.report('Hessian was built in %.2fs.', label='_anm_hessian')
         self._kirchhoff = kirchhoff
         self._hessian = hessian
@@ -183,86 +195,46 @@ class ANMBase(NMA):
         :func:`numpy.linalg.eigh` is used.
 
         :arg n_modes: number of non-zero eigenvalues/vectors to calculate.
-            If ``None`` is given, all modes will be calculated.
+            If **None** or ``'all'`` is given, all modes will be calculated.
         :type n_modes: int or None, default is 20
 
-        :arg zeros: If ``True``, modes with zero eigenvalues will be kept.
-        :type zeros: bool, default is ``False``
+        :arg zeros: If **True**, modes with zero eigenvalues will be kept.
+        :type zeros: bool, default is **True**
 
         :arg turbo: Use a memory intensive, but faster way to calculate modes.
-        :type turbo: bool, default is ``True``
+        :type turbo: bool, default is **True**
         """
 
         if self._hessian is None:
             raise ValueError('Hessian matrix is not built or set')
+        if str(n_modes).lower() == 'all':
+            n_modes = None
         assert n_modes is None or isinstance(n_modes, int) and n_modes > 0, \
             'n_modes must be a positive integer'
         assert isinstance(zeros, bool), 'zeros must be a boolean'
         assert isinstance(turbo, bool), 'turbo must be a boolean'
-        linalg = importLA()
+        self._clear()
         LOGGER.timeit('_anm_calc_modes')
-        shift = 5
-        if linalg.__package__.startswith('scipy'):
-            if n_modes is None:
-                eigvals = None
-                n_modes = self._dof
-            else:
-                if n_modes >= self._dof:
-                    eigvals = None
-                    n_modes = self._dof
-                else:
-                    eigvals = (0, n_modes + shift)
-            if eigvals:
-                turbo = False
-            if isinstance(self._hessian, np.ndarray):
-                values, vectors = linalg.eigh(self._hessian, turbo=turbo,
-                                              eigvals=eigvals)
-            else:
-                try:
-                    from scipy.sparse import linalg as scipy_sparse_la
-                except ImportError:
-                    raise ImportError('failed to import scipy.sparse.linalg, '
-                                      'which is required for sparse matrix '
-                                      'decomposition')
-                try:
-                    values, vectors = (
-                        scipy_sparse_la.eigsh(self._hessian, k=n_modes+6,
-                                              which='SA'))
-                except:
-                    values, vectors = (
-                        scipy_sparse_la.eigen_symmetric(self._hessian,
-                                                        k=n_modes+6,
-                                                        which='SA'))
-
-        else:
-            if n_modes is not None:
-                LOGGER.info('Scipy is not found, all modes are calculated.')
-            values, vectors = np.linalg.eigh(self._hessian)
-        n_zeros = sum(values < ZERO)
-
-        if n_zeros < 6:
-            LOGGER.warning('Less than 6 zero eigenvalues are calculated.')
-            shift = n_zeros - 1
-        elif n_zeros > 6:
-            LOGGER.warning('More than 6 zero eigenvalues are calculated.')
-            shift = n_zeros - 1
-        if zeros:
-            shift = -1
-        if n_zeros > n_modes:
-            self._eigvals = values[1+shift:]
-        else:
-            self._eigvals = values[1+shift:]
-        self._vars = 1 / self._eigvals
+        values, vectors, vars = solveEig(self._hessian, n_modes=n_modes, zeros=zeros, 
+                                         turbo=turbo, expct_n_zeros=6)
+        self._eigvals = values
+        self._array = vectors
+        self._vars = vars
         self._trace = self._vars.sum()
-        
-        if shift:
-            self._array = vectors[:, 1+shift:].copy()
-        else:
-            self._array = vectors
-        self._n_modes = len(self._eigvals)
-        LOGGER.report('{0} modes were calculated in %.2fs.'
-                     .format(self._n_modes), label='_anm_calc_modes')
 
+        self._n_modes = len(self._eigvals)
+        if self._n_modes > 1:
+            LOGGER.report('{0} modes were calculated in %.2fs.'
+                        .format(self._n_modes), label='_anm_calc_modes')
+        else:
+            LOGGER.report('{0} mode was calculated in %.2fs.'
+                        .format(self._n_modes), label='_anm_calc_modes')
+
+    
+    def setEigens(self, vectors, values=None):
+        self._clear()
+        super(ANMBase, self).setEigens(vectors, values)
+        
 
 class ANM(ANMBase, GNMBase):
 
@@ -284,27 +256,97 @@ class ANM(ANMBase, GNMBase):
 
         super(ANM, self).__init__(name)
 
+class MaskedANM(ANM, MaskedNMA):
+    def __init__(self, name='Unknown', mask=False, masked=True):
+        ANM.__init__(self, name)
+        MaskedNMA.__init__(self, name, mask, masked)
+
+    def calcModes(self, n_modes=20, zeros=False, turbo=True):
+        self._maskedarray = None
+        super(MaskedANM, self).calcModes(n_modes, zeros, turbo)
+
+    def _reset(self):
+        super(MaskedANM, self)._reset()
+        self._maskedarray = None
+
+    def setHessian(self, hessian):
+        """Set Hessian matrix.  A symmetric matrix is expected, i.e. not a
+        lower- or upper-triangular matrix."""
+
+        if not isinstance(hessian, np.ndarray):
+            raise TypeError('hessian must be a Numpy array')
+        elif hessian.ndim != 2 or hessian.shape[0] != hessian.shape[1]:
+            raise ValueError('hessian must be square matrix')
+        elif hessian.shape[0] % 3:
+            raise ValueError('hessian.shape must be (3*n_atoms,3*n_atoms)')
+        elif hessian.dtype != float:
+            try:
+                hessian = hessian.astype(float)
+            except:
+                raise ValueError('hessian.dtype must be float')
+        
+        mask = self.mask
+        if not self.masked:
+            if not np.isscalar(mask):
+                if self.is3d():
+                    mask = np.repeat(mask, 3)
+                try:
+                    hessian = hessian[mask, :][:, mask]
+                except IndexError:
+                    raise IndexError('size mismatch between Hessian (%d) and mask (%d).'
+                                     'Try set masked to False or reset mask'%(len(hessian), len(mask)))
+
+        super(MaskedANM, self).setHessian(hessian)
+
+    def _getHessian(self):
+        """Returns the Hessian matrix."""
+
+        hessian = self._hessian
+
+        if hessian is None: return None
+
+        if not self._isOriginal():
+            hessian = self._extend(hessian, axis=None)
+
+        return hessian
+
 
 def calcANM(pdb, selstr='calpha', cutoff=15., gamma=1., n_modes=20,
-            zeros=False):
-    """Return an :class:`ANM` instance and atoms used for the calculations.
+            zeros=False, title=None):
+    """Returns an :class:`ANM` instance and atoms used for the calculations.
     By default only alpha carbons are considered, but selection string helps
-    selecting a subset of it.  *pdb* can be :class:`.Atomic` instance."""
+    selecting a subset of it.  *pdb* can be a PDB code, :class:`.Atomic` 
+    instance, or a Hessian matrix (:class:`~numpy.ndarray`)."""
 
-    if isinstance(pdb, str):
-        ag = parsePDB(pdb)
-        title = ag.getTitle()
-    elif isinstance(pdb, Atomic):
-        ag = pdb
-        if isinstance(pdb, AtomGroup):
-            title = ag.getTitle()
-        else:
-            title = ag.getAtomGroup().getTitle()
+    if isinstance(pdb, np.ndarray):
+        H = pdb
+        if title is None:
+            title = 'Unknown'
+        anm = ANM(title)
+        anm.setHessian(H)
+        anm.calcModes(n_modes, zeros)
+        
+        return anm
+        
     else:
-        raise TypeError('pdb must be an atomic class, not {0}'
-                        .format(type(pdb)))
-    anm = ANM(title)
-    sel = ag.select(selstr)
-    anm.buildHessian(sel, cutoff, gamma)
-    anm.calcModes(n_modes)
-    return anm, sel
+        if isinstance(pdb, str):
+            ag = parsePDB(pdb)
+            if title is None:
+                title = ag.getTitle()
+        elif isinstance(pdb, Atomic):
+            ag = pdb
+            if title is None:
+                if isinstance(pdb, AtomGroup):
+                    title = ag.getTitle()
+                else:
+                    title = ag.getAtomGroup().getTitle()
+        else:
+            raise TypeError('pdb must be an atomic class, not {0}'
+                            .format(type(pdb)))
+        
+        anm = ANM(title)
+        sel = ag.select(selstr)
+        anm.buildHessian(sel, cutoff, gamma)
+        anm.calcModes(n_modes, zeros)
+    
+        return anm, sel

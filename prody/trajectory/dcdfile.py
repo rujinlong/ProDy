@@ -211,7 +211,7 @@ class DCDFile(TrajFile):
 
         self._first_byte = self._file.tell()
         n_csets = (getsize(self._filename) - self._first_byte
-                                                    ) / self._bytes_per_frame
+                                                    ) // self._bytes_per_frame
         if n_csets != self._n_csets:
             LOGGER.warning('DCD header claims {0} frames, file size '
                            'indicates there are actually {1} frames.'
@@ -230,7 +230,7 @@ class DCDFile(TrajFile):
 
 
     def getRemarks(self):
-        """Return remarks parsed from DCD file."""
+        """Returns remarks parsed from DCD file."""
 
         return self._remarks
 
@@ -253,7 +253,7 @@ class DCDFile(TrajFile):
     next = __next__
 
     def nextCoordset(self):
-        """Return next coordinate set."""
+        """Returns next coordinate set."""
 
         if self._closed:
             raise ValueError('I/O operation on closed file')
@@ -304,7 +304,7 @@ class DCDFile(TrajFile):
 
     def getCoordsets(self, indices=None):
         """Returns coordinate sets at given *indices*. *indices* may be an
-        integer, a list of integers or ``None``. ``None`` returns all
+        integer, a list of integers or **None**. **None** returns all
         coordinate sets."""
 
         if self._closed:
@@ -512,15 +512,17 @@ def parseDCD(filename, start=None, stop=None, step=None, astype=None):
 def writeDCD(filename, trajectory, start=None, stop=None, step=None,
              align=False):
     """Write 32-bit CHARMM format DCD file (also NAMD 2.1 and later).
-    *trajectory can be an :class:`Trajectory`, :class:`DCDFile`, or
+    *trajectory* can be an :class:`Trajectory`, :class:`DCDFile`, or
     :class:`Ensemble` instance. *filename* is returned upon successful
     output of file."""
+    if not filename.lower().endswith('.dcd'):
+        filename += '.dcd'
 
     if not isinstance(trajectory, (TrajBase, Ensemble, Atomic)):
         raise TypeError('{0} is not a valid type for trajectory'
                         .format(type(trajectory)))
 
-    irange = list(range(*slice(start, stop,step)
+    irange = list(range(*slice(start, stop, step)
                     .indices(trajectory.numCoordsets())))
     n_csets = len(irange)
     if n_csets == 0:
@@ -573,10 +575,10 @@ def writeDCD(filename, trajectory, start=None, stop=None, step=None,
     time_ = time()
     for j, i in enumerate(irange):
         diff = i - prev
-        if diff > 1:
-            trajectory.skip(diff-1)
         prev = i
         if isTrajectory:
+            if diff > 1:
+                trajectory.skip(diff-1)
             frame = next(trajectory)
             if frame is None:
                 break
@@ -595,11 +597,11 @@ def writeDCD(filename, trajectory, start=None, stop=None, step=None,
                       firsttimestep=first_ts, framefreq=framefreq)
         else:
             dcd.write(frame._getCoords(), uc)
-        LOGGER.update(i, '_prody_writeDCD')
+        LOGGER.update(i, label='_prody_writeDCD')
     if isAtomic:
         trajectory.setACSIndex(acsi)
     j += 1
-    LOGGER.clear()
+    LOGGER.finish()
     dcd.close()
     time_ = time() - time_ or 0.01
     dcd_size = 1.0 * (56 + (n_atoms * 3 + 6) * 4 ) * n_csets / (1024*1024)

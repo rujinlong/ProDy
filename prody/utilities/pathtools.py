@@ -10,7 +10,9 @@ import platform
 import os.path
 from os.path import isfile, isdir, join, split, splitext
 from os.path import getsize, isabs, exists, abspath
-from shutil import copy
+from shutil import copy, Error as shError
+
+from prody import PY3K
 
 PLATFORM = platform.system()
 USERHOME = os.getenv('USERPROFILE') or os.getenv('HOME')
@@ -22,8 +24,7 @@ __all__ = ['gunzip', 'backupFile', 'openFile',
            'pickle', 'unpickle', 'glob', 'addext',
            'PLATFORM', 'USERHOME']
 
-major, minor = sys.version_info[:2]
-if major > 2 and minor <= 3:
+if PY3K:
     import gzip
     from gzip import GzipFile
     import io
@@ -63,9 +64,8 @@ if major > 2 and minor <= 3:
 
             self.close()
 
-
     def gzip_open(filename, mode="rb", compresslevel=9,
-             encoding=None, errors=None, newline=None):
+                  encoding=None, errors=None, newline=None):
         """Open a gzip-compressed file in binary or text mode.
 
         The filename argument can be an actual filename (a str or bytes object), or
@@ -117,7 +117,7 @@ else:
         else:
             return gzip.GzipFile(filename, *args, **kwargs)
 
-if (major, minor) >= (3, 2):
+if PY3K:
     from gzip import compress as gzip_compress
     from gzip import decompress as gzip_decompress
 
@@ -191,7 +191,7 @@ def openFile(filename, *args, **kwargs):
 
 
 def gunzip(filename, outname=None):
-    """Return output name that contains decompressed contents of *filename*.
+    """Returns output name that contains decompressed contents of *filename*.
     When no *outname* is given, *filename* is used as the output name as it
     is or after :file:`.gz` extension is removed.  *filename* may also be a
     string buffer, in which case decompressed string buffer or *outname* that
@@ -264,28 +264,28 @@ def gunzip(filename, outname=None):
 
 
 def isExecutable(path):
-    """Return true if *path* is an executable."""
+    """Returns true if *path* is an executable."""
 
     return (isinstance(path, str) and exists(path) and
         os.access(path, os.X_OK))
 
 
 def isReadable(path):
-    """Return true if *path* is readable by the user."""
+    """Returns true if *path* is readable by the user."""
 
     return (isinstance(path, str) and exists(path) and
         os.access(path, os.R_OK))
 
 
 def isWritable(path):
-    """Return true if *path* is writable by the user."""
+    """Returns true if *path* is writable by the user."""
 
     return (isinstance(path, str) and exists(path) and
         os.access(path, os.W_OK))
 
 
 def relpath(path):
-    """Return *path* on Windows, and relative path elsewhere."""
+    """Returns *path* on Windows, and relative path elsewhere."""
 
     if PLATFORM == 'Windows':
         return path
@@ -294,7 +294,7 @@ def relpath(path):
 
 
 def sympath(path, beg=2, end=1, ellipsis='...'):
-    """Return a symbolic path for a long *path*, by replacing folder names
+    """Returns a symbolic path for a long *path*, by replacing folder names
     in the middle with *ellipsis*.  *beg* and *end* specified how many folder
     (or file) names to include from the beginning and end of the path."""
 
@@ -333,9 +333,13 @@ def which(program):
     http://stackoverflow.com/questions/377017/"""
 
     fpath, fname = os.path.split(program)
+    fname, fext = os.path.splitext(fname)
+
     if fpath and isExecutable(program):
         return program
     else:
+        if os.name == 'nt' and fext == '':
+            program += '.exe'
         for path in os.environ["PATH"].split(os.pathsep):
             path = os.path.join(path, program)
             if isExecutable(path):
@@ -369,11 +373,11 @@ def openDB(filename, *args):
         import anydbm as dbm
     except ImportError:
         import dbm
-    return anydbm.open(filename, *args)
+    return dbm.open(filename, *args)
 
 
 def openSQLite(filename, *args):
-    """Return a connection to SQLite database *filename*.  If ``'n'`` argument
+    """Returns a connection to SQLite database *filename*.  If ``'n'`` argument
     is passed, remove any existing databases with the same name and return
     connection to a new empty database."""
 
@@ -408,7 +412,7 @@ def openURL(url, timeout=5, **kwargs):
 
 
 def glob(*pathnames):
-    """Return concatenation of ordered lists of paths matching patterns in
+    """Returns concatenation of ordered lists of paths matching patterns in
     *pathnames*."""
 
     paths = []
@@ -420,13 +424,16 @@ def glob(*pathnames):
 
 
 def copyFile(src, dst):
-    """Return *dst*, a copy of *src*."""
+    """Returns *dst*, a copy of *src*."""
 
-    copy(src, dst)
+    try:
+        copy(src, dst)
+    except shError:
+        return dst
     return dst
 
 
 def addext(filename, extension):
-    """Return *filename*, with *extension* if it does not have one."""
+    """Returns *filename*, with *extension* if it does not have one."""
 
     return filename + ('' if splitext(filename)[1] else extension)

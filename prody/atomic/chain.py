@@ -4,26 +4,12 @@
 from numpy import arange, unique
 
 from .subset import AtomSubset
+from .atomic import AAMAP
 
 __all__ = ['Chain']
 
-AAMAP = {
-    'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C', 'GLN': 'Q',
-    'GLU': 'E', 'GLY': 'G', 'HIS': 'H', 'ILE': 'I', 'LEU': 'L', 'LYS': 'K',
-    'MET': 'M', 'PHE': 'F', 'PRO': 'P', 'SER': 'S', 'THR': 'T', 'TRP': 'W',
-    'TYR': 'Y', 'VAL': 'V',
-    'ASX': 'B', 'GLX': 'Z', 'SEC': 'U', 'PYL': 'O', 'XLE': 'J',
-}
-_ = {}
-for aaa, a in AAMAP.items():
-    _[a] = aaa
-AAMAP.update(_)
-AAMAP.update({'PTR': 'Y', 'TPO': 'T', 'SEP': 'S', 'CSO': 'C',
-              'HSD': 'H', 'HSP': 'H', 'HSE': 'H'})
-
-
 def getSequence(resnames):
-    """Return polypeptide sequence as from list of *resnames* (residue
+    """Returns polypeptide sequence as from list of *resnames* (residue
     name abbreviations)."""
 
     get = AAMAP.get
@@ -86,32 +72,25 @@ class Chain(AtomSubset):
 
         if isinstance(key, tuple):
             return self.getResidue(*key)
-
-        elif isinstance(key, slice):
-            resnums = set(arange(*key.indices(self._getResnums().max()+1)))
-            _list = self._list
-            return [_list[i] for (rn, ic), i in self._dict.items()
-                    if rn in resnums]
-
         else:
-            return self.getResidue(key)
+            return AtomSubset.__getitem__(self, key)
 
     def getSegment(self):
-        """Return segment of the chain."""
+        """Returns segment of the chain."""
 
         segname = self.getSegname()
         if segname is not None:
             return self._hv.getSegment(segname)
 
     def getSegname(self):
-        """Return segment name."""
+        """Returns segment name."""
 
         segnames = self._ag._getSegnames()
         if segnames is not None:
             return segnames[self._indices[0]]
 
     def getResidue(self, resnum, icode=None):
-        """Return residue with number *resnum* and insertion code *icode*."""
+        """Returns residue with number *resnum* and insertion code *icode*."""
 
         return self._hv.getResidue(self.getChid(), resnum, icode,
                                    self.getSegname())
@@ -126,14 +105,14 @@ class Chain(AtomSubset):
     __iter__ = iterResidues
 
     def numResidues(self):
-        """Return number of residues."""
+        """Returns number of residues."""
 
         return len(set(self._getResindices()))
 
     __len__ = numResidues
 
     def getChid(self):
-        """Return chain identifier."""
+        """Returns chain identifier."""
 
         return self._ag._getChids()[self._indices[0]]
 
@@ -143,12 +122,12 @@ class Chain(AtomSubset):
         self.setChids(chid)
 
     def getChindex(self):
-        """Return chain index."""
+        """Returns chain index."""
 
         return self._ag._getChindices()[self._indices[0]]
 
     def getSequence(self, **kwargs):
-        """Return one-letter sequence string for amino acids in the chain.
+        """Returns one-letter sequence string for amino acids in the chain.
         When *allres* keyword argument is **True**, sequence will include all
         residues (e.g. water molecules) in the chain and **X** will be used for
         non-standard residue names."""
@@ -168,7 +147,7 @@ class Chain(AtomSubset):
         return seq
 
     def getSelstr(self):
-        """Return selection string that selects atoms in this chain."""
+        """Returns selection string that selects atoms in this chain."""
 
         segment = self.getSegment()
         if segment is None:
@@ -180,3 +159,9 @@ class Chain(AtomSubset):
         else:
             return 'chain {0} and ({1})'.format(self.getChid(),
                                                 segment.getSelstr())
+
+    def getHierView(self, **kwargs):
+        """Returns a hierarchical view of the this chain."""
+
+        return HierView(self, **kwargs)
+        

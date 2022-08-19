@@ -28,32 +28,32 @@ static int iminarg1,iminarg2;
 
 
 /* Other structures */
-typedef struct {float X[3];int model;} Atom_Line;
+typedef struct {float X[3]; int model;} Atom_Line;
 typedef struct {Atom_Line *atom;} PDB_File;
-typedef struct {int **IDX;double *X;} dSparse_Matrix;
+typedef struct {int **IDX; double *X;} dSparse_Matrix;
 
 
 
 /* --------- These functions are essential --------- */
-int bless_from_tensor(double **HB,double ***HT,int **CT,int nblx);
-int calc_blessian_mem(PDB_File *PDB,dSparse_Matrix *PP1,int nres,int nblx,
-		      int elm,double **HB,double cut,double gam,double scl,
-		      double mlo,double mhi);
-void copy_dsparse(dSparse_Matrix *A,dSparse_Matrix *B,int lo,int hi);
-void copy_prj_ofst(dSparse_Matrix *PP,double *proj,int elm,int bdim);
+int bless_from_tensor(double **HB, double ***HT, int **CT, int nblx);
+int calc_blessian_mem(PDB_File *PDB, dSparse_Matrix *PP1, int nres, int nblx,
+		      int elm, double *hess, double **HB, double cut, double gam, double scl,
+		      double mlo, double mhi);
+void copy_dsparse(dSparse_Matrix *A, dSparse_Matrix *B, int lo, int hi);
+void copy_prj_ofst(dSparse_Matrix *PP, double *proj, int elm, int bdim);
 void cross(double x[], double y[], double z[]);
-int dblock_projections2(dSparse_Matrix *PP,PDB_File *PDB,
-			int nres,int nblx,int bmx);
-void dsort_PP2(dSparse_Matrix *MM,int n,int idx);
-int find_contacts1(int **CT,PDB_File *PDB,int nres,int nblx,double cut);
-void hess_superrow_mem(double **HR,int **CT,PDB_File *PDB,int nres,
-		       int who,double cut,double gam,double mscl,double mlo,
+int dblock_projections2(dSparse_Matrix *PP, PDB_File *PDB, 
+			int nres, int nblx, int bmx);
+void dsort_PP2(dSparse_Matrix *MM, int n, int idx);
+int find_contacts1(int **CT, PDB_File *PDB, int nres, int nblx, double cut);
+void hess_superrow_mem(double **HR, int **CT,PDB_File *PDB, int nres,
+		       int who, double cut, double gam, double mscl, double mlo,
 		       double mhi);
-void init_bst(int *BST,dSparse_Matrix *PP,int elm,int n,int idx);
-void righthand2(double *VAL,double **VEC,int n);
-int **unit_imatrix(long lo,long hi);
-double ***zero_d3tensor(long nrl,long nrh,long ncl,long nch,long ndl,long ndh);
-double **zero_dmatrix(long nrl,long nrh,long ncl,long nch);
+void init_bst(int *BST, dSparse_Matrix *PP, int elm, int n, int idx);
+void righthand2(double *VAL, double **VEC, int n);
+int **unit_imatrix(long lo, long hi);
+double ***zero_d3tensor(long nrl, long nrh, long ncl, long nch, long ndl, long ndh);
+double **zero_dmatrix(long nrl, long nrh, long ncl, long nch);
 
 
 /* ---------- Essential Numerical Recipes routines ------------- */
@@ -77,90 +77,72 @@ void deigsrt(double d[], double **v, int n);
 double dpythag(double a, double b);
 void dsvdcmp(double **a, int m, int n, double w[], double **v);
 
+/* ---------- Functions for debugging ---------------- */
+double sum(double *a, int n);
 
 
-
-/* "buildhessian" constructs a block Hessian and associated projection matrix 
-   by application of the ANM.  Atomic coordinates and block definitions are 
-   provided in 'coords' and 'blocks'; ANM parameters are provided in 'cutoff' 
-   and 'gamma'.  On successful termination, the block Hessian is stored in 
-   'hessian', and the projection matrix between block and all-atom spaces is 
-   in 'projection'. */
-static PyObject *buildhessian(PyObject *self, PyObject *args, PyObject *kwargs) {
+/* "calc_projection" calculates the projection matrix for the RTB.  
+   Atomic coordinates and block definitions are provided in 'coords' and 'blocks'.  
+   On successful termination, the projection matrix between block and all-atom spaces 
+   is in 'projection'. */
+static PyObject *calc_projection(PyObject *self, PyObject *args, PyObject *kwargs) {
   PDB_File PDB;
-  dSparse_Matrix PP,HH;
-  PyArrayObject *coords, *blocks, *hessian, *projection;
-  double *XYZ,*hess,*proj;
-  long *BLK;
-  double **HB;
-  double cutoff = 15., gamma = 1., scl=1., mlo=1., mhi=-1.;
-  int natm, nblx, bmx;
-  int hsize,elm,bdim,i,j;
+  dSparse_Matrix PP, HH;
+  PyArrayObject *coords, *blocks, *projection;
+  double *XYZ, *proj;
+  int *BLK;
+  int natm, nblx, bmx, bdim;
+  int hsize, elm, i, j;
 
-  static char *kwlist[] = {"coords", "blocks", "hessian", "projection",
-			   "natoms", "nblocks", "maxsize", "cutoff",
-			   "gamma", "scale", "memlo", "memhi", NULL};
+  static char *kwlist[] = {"coords", "blocks", "projection",
+			   "natoms", "nblocks", "nb6", "maxsize", NULL};
 
-  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOiii|ddddd", kwlist,
-				   &coords, &blocks, &hessian, &projection,
-				   &natm, &nblx, &bmx, &cutoff, &gamma, &scl,
-				   &mlo, &mhi))
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOiiii|ddddd", kwlist,
+				   &coords, &blocks, &projection,
+				   &natm, &nblx, &bdim, &bmx))
     return NULL;
 
   XYZ = (double *) PyArray_DATA(coords);
-  BLK = (long *) PyArray_DATA(blocks);
-  hess = (double *) PyArray_DATA(hessian);
+  BLK = (int *) PyArray_DATA(blocks);
   proj = (double *) PyArray_DATA(projection);
-
-
 
   /* First allocate a PDB_File object to hold the coordinates and block
      indices of the atoms.  This wastes a bit of memory, but it prevents
      the need to re-write all of the RTB functions that are used in
      standalone C code. */
-  PDB.atom=malloc((size_t)((natm+2)*sizeof(Atom_Line)));
-  if(!PDB.atom) return PyErr_NoMemory();
-  for(i=1;i<=natm;i++){
-    PDB.atom[i].model=BLK[i-1];
-    for(j=0;j<3;j++)
-      PDB.atom[i].X[j]=XYZ[j*natm+i-1];
+  PDB.atom = malloc((size_t)((natm+2)*sizeof(Atom_Line)));
+  if (!PDB.atom) return PyErr_NoMemory();
+  for (i=1; i<=natm; i++){
+    PDB.atom[i].model = BLK[i-1];
+    for(j=0; j<3; j++)
+      PDB.atom[i].X[j] = XYZ[j*natm+i-1];
   }
-
 
 
   /* Find the projection matrix */
   hsize = 18*bmx*nblx > 12*natm ? 12*natm : 18*bmx*nblx;
-  HH.IDX=imatrix(1,hsize,1,2);
-  HH.X=dvector(1,hsize);
-  elm=dblock_projections2(&HH,&PDB,natm,nblx,bmx);
-  PP.IDX=imatrix(1,elm,1,2);
-  PP.X=dvector(1,elm);
-  for(i=1;i<=elm;i++){
-    PP.IDX[i][1]=HH.IDX[i][1];
-    PP.IDX[i][2]=HH.IDX[i][2];
-    PP.X[i]=HH.X[i];
+
+  HH.IDX = imatrix(1, hsize, 1, 2);
+  HH.X = dvector(1, hsize);
+  elm = dblock_projections2(&HH, &PDB, natm, nblx, bmx);
+
+  PP.IDX = imatrix(1, elm, 1, 2);
+  PP.X = dvector(1, elm);
+  for (i=1; i<=elm; i++){
+    PP.IDX[i][1] = HH.IDX[i][1];
+    PP.IDX[i][2] = HH.IDX[i][2];
+    PP.X[i] = HH.X[i];
   }
-  free_imatrix(HH.IDX,1,hsize,1,2);
-  free_dvector(HH.X,1,hsize);
-  dsort_PP2(&PP,elm,1);
-
-
-  /* Calculate the block Hessian */
-  HB=dmatrix(1,6*nblx,1,6*nblx);
-  bdim=calc_blessian_mem(&PDB,&PP,natm,nblx,elm,HB,cutoff,gamma,scl,mlo,mhi);
-
+  free_imatrix(HH.IDX, 1, hsize, 1, 2);
+  free_dvector(HH.X, 1, hsize);
+  dsort_PP2(&PP, elm, 1);
 
   /* Cast the block Hessian and projection matrix into 1D arrays. */
-  copy_prj_ofst(&PP,proj,elm,bdim);
-  for(i=1;i<=bdim;i++)
-    for(j=1;j<=bdim;j++)
-      hess[bdim*(i-1)+j-1]=HB[i][j];
-
+  copy_prj_ofst(&PP, proj, elm, bdim);
 
   free(PDB.atom);
-  free_imatrix(PP.IDX,1,elm,1,2);
-  free_dvector(PP.X,1,elm);
-  free_dmatrix(HB,1,6*nblx,1,6*nblx);
+  free_imatrix(PP.IDX, 1, elm, 1, 2);
+  free_dvector(PP.X, 1, elm);
 
 
   Py_RETURN_NONE;
@@ -169,9 +151,9 @@ static PyObject *buildhessian(PyObject *self, PyObject *args, PyObject *kwargs) 
 
 static PyMethodDef rtbtools_methods[] = {
 
-    {"buildhessian",  (PyCFunction)buildhessian,
+    {"calc_projection", (PyCFunction) calc_projection,
      METH_VARARGS | METH_KEYWORDS,
-     "Build Hessian matrix and projections."},
+     "Calculate projections."},
 
     {NULL, NULL, 0, NULL}
 };
@@ -207,11 +189,11 @@ PyMODINIT_FUNC initrtbtools(void) {
    from  the tensor HT into the array HB */
 int bless_from_tensor(double **HB,double ***HT,int **CT,int nblx)
 {
-  int *I1,*I2,i,j,p,sb,ii,jj,max,a,b,imx;
+  int *I1, *I2, i, j, p, sb, ii, jj, max, a, b, imx;
 
   max=6*nblx;
-  I1=ivector(1,max);
-  I2=ivector(1,max);
+  I1=ivector(1, max);
+  I2=ivector(1, max);
 
   /* I1[i]==i iff there is a non-zero element in column i
      (removes zeroes that are caused by single-node blocks) */
@@ -257,103 +239,115 @@ int bless_from_tensor(double **HB,double ***HT,int **CT,int nblx)
       }
     }
   }
-  free_ivector(I1,1,max);
-  free_ivector(I2,1,max);
+  free_ivector(I1, 1, max);
+  free_ivector(I2, 1, max);
   return imx;
 }
 
 
 /* "calc_blessian_mem" calculates the block Hessian. */
-int calc_blessian_mem(PDB_File *PDB,dSparse_Matrix *PP1,int nres,int nblx,
-		      int elm,double **HB,double cut,double gam,double scl,
-		      double mlo,double mhi)
+int calc_blessian_mem(PDB_File *PDB, dSparse_Matrix *PP1, int nres, int nblx, 
+		      int elm, double *hess, double **HB, double cut, double gam, double scl, 
+		      double mlo, double mhi)
 {
   dSparse_Matrix *PP2;
-  double **HR,***HT;
-  int **CT,*BST1,*BST2;
-  int ii,i,j,k,p,q,q1,q2,ti,tj,bi,bj,sb,nc,out;
+  double **HR, ***HT;
+  int **CT, *BST1, *BST2;
+  int ii, i, j, k, p, q, q1, q2, ti, tj, bi, bj, sb, nc, out;
 
 
   /* ------------------- INITIALIZE LOCAL VARIABLES ------------------- */
 
   /* HR holde three rows (corresponding to 1 residue) of the full Hessian */
-  HR=zero_dmatrix(1,3*nres,1,3);
+  HR = zero_dmatrix(1, 3*nres, 1, 3);
 
   /* CT is an array of contacts between blocks */
-  CT=unit_imatrix(0,nblx);
+  CT = unit_imatrix(0, nblx);
 
   /* Copy PP1 to PP2 and sort by second element */
-  PP2=(dSparse_Matrix *)malloc((size_t)sizeof(dSparse_Matrix));
-  PP2->IDX=imatrix(1,elm,1,2);
-  PP2->X=dvector(1,elm);
-  copy_dsparse(PP1,PP2,1,elm);
-  dsort_PP2(PP2,elm,2);
+  PP2 = (dSparse_Matrix *) malloc((size_t) sizeof(dSparse_Matrix));
+  PP2->IDX = imatrix(1, elm, 1, 2);
+  PP2->X = dvector(1, elm);
+  copy_dsparse(PP1, PP2, 1, elm);
+  dsort_PP2(PP2, elm, 2);
 
   /* BST1: for all j: BST1[i]<=j<BST[i+1], PP1->IDX[j][1]=i */
   /* BST2: for all j: BST2[i]<=j<BST2[i+1], PP2->IDX[j][2]=i */
-  BST1=ivector(1,3*nres+1);
-  BST2=ivector(1,6*nblx+1);
-  init_bst(BST1,PP1,elm,3*nres+1,1);
-  init_bst(BST2,PP2,elm,6*nblx+1,2);
+  BST1 = ivector(1, 3*nres+1);
+  BST2 = ivector(1, 6*nblx+1);
+  init_bst(BST1, PP1, elm, 3*nres+1, 1);
+  init_bst(BST2, PP2, elm, 6*nblx+1, 2);
   /* ------------------- LOCAL VARIABLES INITIALIZED ------------------ */
 
 
 
   /* ------------- FIND WHICH BLOCKS ARE IN CONTACT --------------- */
-  nc=find_contacts1(CT,PDB,nres,nblx,cut);
+  nc = find_contacts1(CT, PDB, nres, nblx, cut);
 
 
   /* Allocate a tensor for the block Hessian */
-  HT=zero_d3tensor(1,nc,1,6,1,6);
+  HT = zero_d3tensor(1, nc, 1, 6, 1, 6);
 
 
   /* Calculate each super-row of the full Hessian */
-  for(ii=1;ii<=nres;ii++){
+  #define hess(i, j) hess[3*nres*(i)+(j)]
+  for (ii=1; ii<=nres; ii++){
 
-    if(PDB->atom[ii].model!=0){
+    if (PDB->atom[ii].model!=0){
 
       /* ----------------- FIND SUPER-ROW OF FULL HESSIAN --------------- */
-      hess_superrow_mem(HR,CT,PDB,nres,ii,cut,gam,scl,mlo,mhi);
+      for (i=1; i<=3*nres; i++){
+        for (j=1; j<=3; j++){
+          HR[i][j] = hess(i-1, 3*(ii-1)+j-1);
+        }
+      }
+      //hess_superrow_mem(HR, CT, PDB, nres, ii, cut, gam, scl, mlo, mhi);
 
+      // update hess - debug
+      // for (i=1; i<=3*nres; i++){
+      //   for (j=1; j<=3; j++){
+      //     hess(i-1, 3*(ii-1)+j-1) = HR[i][j];
+      //   }
+      // }
 
       /* Update elements of block hessian */
-      q1=BST1[3*(ii-1)+2];
-      q2=BST1[3*(ii-1)+3];
+      q1 = BST1[3*(ii-1)+2];
+      q2 = BST1[3*(ii-1)+3];
       /* Sum over elements of projection matrix corresponding to residue ii:
-	 for each k in the following loop, PP1->IDX[k][1]==3*ii + 0,1,2 */
-      for(k=BST1[3*ii-2];k<BST1[3*ii+1];k++){
-	if(k<q1) q=1;
-	else if(k<q2) q=2;
-	else q=3;
-	i=PP1->IDX[k][2];
-	bi=(i-1)/6+1;
-	ti=i-6*(bi-1);
-	/* Sum over all elements of projection matrix with column j>=i */
-	for(p=BST2[i];p<=elm;p++){
-	  j=PP2->IDX[p][2];
-	  bj=(j-1)/6+1;
-	  sb=CT[bi][bj];
-	  if(i<=j && sb!=0){  /* the first condition should ALWAYS hold */
-	    tj=j-6*(bj-1);
-	    HT[sb][ti][tj]+=(PP1->X[k]*PP2->X[p]*HR[PP2->IDX[p][1]][q]);
-	  }
-	}
+	    for each k in the following loop, PP1->IDX[k][1]==3*ii + 0,1,2 */
+      for (k=BST1[3*ii-2]; k<BST1[3*ii+1]; k++){
+        if (k<q1) q=1;
+        else if (k<q2) q=2;
+        else q=3;
+        i = PP1->IDX[k][2];
+        bi = (i-1)/6 + 1;
+        ti = i - 6*(bi-1);
+        /* Sum over all elements of projection matrix with column j>=i */
+        for (p=BST2[i]; p<=elm; p++){
+          j = PP2->IDX[p][2];
+          bj = (j-1)/6+1;
+          sb = CT[bi][bj];
+          if (i<=j && sb!=0){  /* the first condition should ALWAYS hold */
+            tj = j-6*(bj-1);
+            HT[sb][ti][tj] += (PP1->X[k] * PP2->X[p] * HR[PP2->IDX[p][1]][q]);
+          }
+        }
       }
     }
   }
 
 
   /* Print the block Hessian in sparse format */
-  out=bless_from_tensor(HB,HT,CT,nblx);
+  out=bless_from_tensor(HB, HT, CT, nblx);
 
   /* Free up memory */
-  free_dmatrix(HR,1,3*nres,1,3);
-  free_d3tensor(HT,1,nc,1,6,1,6);
-  free_imatrix(CT,0,nblx,0,nblx);
-  free_ivector(BST1,1,3*nres+1);
-  free_ivector(BST2,1,6*nblx+1);
-  free_imatrix(PP2->IDX,1,elm,1,2);
-  free_dvector(PP2->X,1,elm);
+  free_dmatrix(HR, 1, 3*nres, 1, 3);
+  free_d3tensor(HT, 1, nc, 1, 6, 1, 6);
+  free_imatrix(CT, 0, nblx, 0, nblx);
+  free_ivector(BST1, 1, 3*nres+1);
+  free_ivector(BST2, 1, 6*nblx+1);
+  free_imatrix(PP2->IDX, 1, elm, 1, 2);
+  free_dvector(PP2->X, 1, elm);
   return out;
 }
 
@@ -364,33 +358,42 @@ int calc_blessian_mem(PDB_File *PDB,dSparse_Matrix *PP1,int nres,int nblx,
    six degrees of freedom. 
    PP[i].X = proj[6*nblx*(PP[i].IDX[1]-1)+PP[i].IDX[2]-1
 */
-void copy_prj_ofst(dSparse_Matrix *PP,double *proj,int elm,int bdim)
+void copy_prj_ofst(dSparse_Matrix *PP, double *proj, int elm, int bdim)
 {
-  int *I1,*I2,max=0,i,j=0;
+  int *I1, *I2, max=0, i, j=0;
 
   for(i=1;i<=elm;i++)
     if(PP->IDX[i][2]>max)
       max=PP->IDX[i][2];
-  I1=ivector(1,max);
-  I2=ivector(1,max);
+  I1=ivector(1, max);
+  I2=ivector(1, max);
   for(i=1;i<=max;i++) I1[i]=0;
   for(i=1;i<=elm;i++)
     I1[PP->IDX[i][2]]=PP->IDX[i][2];
-  for(i=1;i<=max;i++){
+  for(i=1;i<=max;i++)
+  {
     if(I1[i]!=0) j++;
     I2[i]=j;
   }
-  for(i=1;i<=elm;i++)
-    if(PP->X[i]!=0.0)
-      proj[bdim*(PP->IDX[i][1]-1) + I2[PP->IDX[i][2]] - 1] = PP->X[i];
-  free_ivector(I1,1,max);
-  free_ivector(I2,1,max);
+
+  // double s = 0;
+  for(i=1; i<=elm; i++)
+    if(PP->X[i] != 0.0)
+    {
+      proj[bdim*(PP->IDX[i][1]-1) + I2[PP->IDX[i][2]]-1] = PP->X[i];
+      // s += PP->X[i];
+    }
+
+  // printf("proj = %f\n", s);
+
+  free_ivector(I1, 1, max);
+  free_ivector(I2, 1, max);
 }
 
 
 /* "copy_dsparse" COPIES ELEMENTS lo THROUGH hi
    OF SPARSE MATRIX 'A' TO SPARSE MATRIX 'B' */
-void copy_dsparse(dSparse_Matrix *A,dSparse_Matrix *B,int lo,int hi)
+void copy_dsparse(dSparse_Matrix *A, dSparse_Matrix *B, int lo, int hi)
 {
   int i;
 
@@ -413,125 +416,140 @@ void cross(double x[], double y[], double z[])
 
 /* "dblock_projections2" CALCULATES THE PROJECTION
    FROM FULL RESIDUE SPACE TO RIGID BLOCK SPACE */
-int dblock_projections2(dSparse_Matrix *PP,PDB_File *PDB,
-			int nres,int nblx,int bmx)
+int dblock_projections2(dSparse_Matrix *PP, PDB_File *PDB, 
+			int nres, int nblx, int bmx)
 {
-  double **X,**I,**IC,*CM,*W,**A,**ISQT;
-  double x,tr,dd,df;
-  int *IDX,nbp,b,i,j,k,ii,jj,aa,bb,elm;
+  double **X, **I, **IC, *CM, *W, **A, **ISQT;
+  double x, tr, dd, df;
+  int *IDX, nbp, b, i, j, k, ii, jj, aa, bb, elm;
 
 
   /* INITIALIZE BLOCK ARRAYS */
-  elm=0;
-  X=dmatrix(1,bmx,1,3);
-  IDX=ivector(1,bmx);
-  CM=dvector(1,3);
-  I=dmatrix(1,3,1,3);
-  IC=dmatrix(1,3,1,3);
-  W=dvector(1,3);
-  A=dmatrix(1,3,1,3);
-  ISQT=dmatrix(1,3,1,3);
+  elm = 0;
+  X = dmatrix(1, bmx, 1, 3);
+  IDX = ivector(1, bmx);
+  CM = dvector(1, 3);
+  I = dmatrix(1, 3, 1, 3);
+  IC = dmatrix(1, 3, 1, 3);
+  W = dvector(1, 3);
+  A = dmatrix(1, 3, 1, 3);
+  ISQT = dmatrix(1, 3, 1, 3);
 
   /* CYCLE THROUGH BLOCKS */
-  for(b=1;b<=nblx;b++){
-
+  for(b=1; b<=nblx; b++)
+  {
     /* CLEAR MATRICES */
-    for(j=1;j<=3;j++){
-      CM[j]=0.0;
-      for(i=1;i<=3;i++) I[i][j]=0.0;
-      for(i=1;i<=bmx;i++) X[i][j]=0.0;
+    for(j=1; j<=3; j++)
+    {
+      CM[j] = 0.0;
+      for(i=1; i<=3; i++) I[i][j] = 0.0;
+      for(i=1; i<=bmx; i++) X[i][j] = 0.0;
     }
 
     /* STORE VALUES FOR CURRENT BLOCK */
-    nbp=0;
-    for(i=1;i<=nres;i++){
-      if(PDB->atom[i].model==b){
-	IDX[++nbp]=i;
-	for(j=1;j<=3;j++){
-	  x=(double)PDB->atom[i].X[j-1];
-	  X[nbp][j]=x;
-	  CM[j]+=x;
-	}
+    nbp = 0;
+    for (i=1; i<=nres; i++)
+    {
+      if (PDB->atom[i].model==b)
+      {
+	      IDX[++nbp] = i;
+	      for (j=1; j<=3; j++){
+	        x = (double)PDB->atom[i].X[j-1];
+	        X[nbp][j] = x;
+	        CM[j] += x;
+      	}
       }
     }
 
     /* TRANSLATE BLOCK CENTER OF MASS TO ORIGIN */
-    for(j=1;j<=3;j++) CM[j]/=(double)nbp;
-    for(i=1;i<=nbp;i++)
-      for(j=1;j<=3;j++)
-	X[i][j]-=CM[j];
+    for (j=1; j<=3; j++) CM[j] /= (double)nbp;
+    for (i=1; i<=nbp; i++)
+      for (j=1; j<=3; j++)
+	      X[i][j] -= CM[j];
 
     /* CALCULATE INERTIA TENSOR */
-    for(k=1;k<=nbp;k++){
-      dd=0.0;
-      for(j=1;j<=3;j++){
-	df=X[k][j];
-	dd+=df*df;
+    for(k=1; k<=nbp; k++)
+    {
+      dd = 0.0;
+      for(j=1; j<=3; j++)
+      {
+        df = X[k][j];
+        dd += df*df;
       }
-      for(i=1;i<=3;i++){
-	I[i][i]+=(dd-X[k][i]*X[k][i]);
-	for(j=i+1;j<=3;j++){
-	  I[i][j]-=X[k][i]*X[k][j];
-	  I[j][i]=I[i][j];
-	}
+      for(i=1; i<=3; i++)
+      {
+        I[i][i] += (dd - X[k][i] * X[k][i]);
+        for(j=i+1; j<=3; j++)
+        {
+          I[i][j] -= X[k][i]*X[k][j];
+          I[j][i] = I[i][j];
+	      }
       }
     }
 
     /* DIAGONALIZE INERTIA TENSOR */
-    for(i=1;i<=3;i++)
-      for(j=1;j<=3;j++)
-	IC[i][j]=I[i][j];
-    dsvdcmp(IC,3,3,W,A);
-    deigsrt(W,A,3);
-    righthand2(W,A,3);
+    for (i=1; i<=3; i++)
+      for (j=1; j<=3; j++)
+	      IC[i][j]=I[i][j];
+    dsvdcmp(IC, 3, 3, W, A);
+    deigsrt(W, A, 3);
+    righthand2(W, A, 3);
 
     /* FIND ITS SQUARE ROOT */
-    for(i=1;i<=3;i++)
-      for(j=1;j<=3;j++){
-	dd=0.0;
-	for(k=1;k<=3;k++)
-	  dd+=A[i][k]*A[j][k]/sqrt(W[k]);
-	ISQT[i][j]=dd;
+    for (i=1; i<=3; i++)
+      for (j=1;j<=3; j++)
+      {
+	      dd = 0.0;
+        for(k=1; k<=3; k++)
+          dd += A[i][k]*A[j][k]/sqrt(W[k]);
+        ISQT[i][j] = dd;
       }
 
     /* UPDATE PP WITH THE RIGID MOTIONS OF THE BLOCK */
-    tr=1.0/sqrt((double)nbp);
-    for(i=1;i<=nbp;i++){
+    tr = 1.0 / sqrt((double)nbp);
+    // printf("nbp = %d\n", nbp);
+
+    for (i=1; i<=nbp; i++)
+    {
 
       /* TRANSLATIONS: 3*(IDX[i]-1)+1 = x-COORDINATE OF RESIDUE IDX[i];
-	 6*(b-1)+1 = x-COORDINATE OF BLOCK b */
-      for(j=1;j<=3;j++){
-	elm++;
-	PP->IDX[elm][1] = 3*(IDX[i]-1)+j;
-	PP->IDX[elm][2] = 6*(b-1)+j;
-	PP->X[elm] = tr;
+	      6*(b-1)+1 = x-COORDINATE OF BLOCK b */
+      for(j=1; j<=3; j++){
+        elm++;
+        PP->IDX[elm][1] = 3*(IDX[i]-1)+j;
+        PP->IDX[elm][2] = 6*(b-1)+j;
+        PP->X[elm] = tr;
       }
 
       /* ROTATIONS */
-      if(nbp>1){
-	for(ii=1;ii<=3;ii++){
-	  for(jj=1;jj<=3;jj++){
-	    if(jj==1) {aa=2; bb=3;}
-	    else if(jj==2) {aa=3; bb=1;}
-	    else {aa=1; bb=2;}
-	    dd=ISQT[ii][aa]*X[i][bb]-ISQT[ii][bb]*X[i][aa];
-	    elm++;
-	    PP->IDX[elm][1] = 3*(IDX[i]-1)+jj;
-	    PP->IDX[elm][2] = 6*(b-1)+3+ii;
-	    PP->X[elm] = dd;
-	  }
-	}
+      if (nbp > 1)
+      {
+        for (ii=1; ii<=3; ii++)
+        {
+          for (jj=1; jj<=3; jj++)
+          {
+            if (jj==1) {aa=2; bb=3;}
+            else if (jj==2) {aa=3; bb=1;}
+            else {aa=1; bb=2;}
+            dd = ISQT[ii][aa]*X[i][bb]-ISQT[ii][bb]*X[i][aa];
+            elm++;
+            PP->IDX[elm][1] = 3*(IDX[i]-1)+jj;
+            PP->IDX[elm][2] = 6*(b-1)+3+ii;
+            PP->X[elm] = dd;
+	        }
+        }
       }
     }
   }
-  free_dmatrix(X,1,bmx,1,3);
-  free_ivector(IDX,1,bmx);
-  free_dvector(CM,1,3);
-  free_dmatrix(I,1,3,1,3);
-  free_dmatrix(IC,1,3,1,3);
-  free_dvector(W,1,3);
-  free_dmatrix(A,1,3,1,3);
-  free_dmatrix(ISQT,1,3,1,3);
+
+  free_dmatrix(X, 1, bmx, 1, 3);
+  free_ivector(IDX, 1, bmx);
+  free_dvector(CM, 1, 3);
+  free_dmatrix(I, 1, 3, 1, 3);
+  free_dmatrix(IC, 1, 3, 1, 3);
+  free_dvector(W, 1, 3);
+  free_dmatrix(A, 1, 3, 1, 3);
+  free_dmatrix(ISQT, 1, 3, 1, 3);
 
   return elm;
 }
@@ -539,11 +557,11 @@ int dblock_projections2(dSparse_Matrix *PP,PDB_File *PDB,
 
 /* "dsort_PP2" SORTS THE PROJECTION MATRIX IN ASCENDING ORDER OF THE
    INDEX 'idx'.  ADAPTED FROM THE NUMERICAL RECIPES 'HEAPSORT' ROUTINE. */
-void dsort_PP2(dSparse_Matrix *MM,int n,int idx)
+void dsort_PP2(dSparse_Matrix *MM, int n, int idx)
 {
   double x;
-  int i,ir,j,l,hi,i1,i2,ndx;
-  unsigned long rra,*ra;
+  int i, ir, j, l, hi, i1, i2, ndx;
+  unsigned long rra, *ra;
 
   if(n<2) return;
   ndx = idx==1 ? 2 : 1;
@@ -553,7 +571,7 @@ void dsort_PP2(dSparse_Matrix *MM,int n,int idx)
   for(i=1;i<=n;i++)
     if(MM->IDX[i][ndx]>hi)
       hi=MM->IDX[i][ndx];
-  ra=lvector(1,n);
+  ra=lvector(1, n);
   for(i=1;i<=n;i++)
     ra[i]=(long)hi*(MM->IDX[i][idx]-1)+MM->IDX[i][ndx];
 
@@ -603,7 +621,7 @@ void dsort_PP2(dSparse_Matrix *MM,int n,int idx)
     MM->IDX[i][ndx]=i2;
     MM->X[i]=x;
   }
-  free_lvector(ra,1,n);
+  free_lvector(ra, 1, n);
 }
 
 
@@ -611,34 +629,35 @@ void dsort_PP2(dSparse_Matrix *MM,int n,int idx)
 /* "find_contacts1" FINDS WHICH BLOCKS ARE IN CONTACT, AND ASSIGNS EACH
    PAIR OF CONTACTING BLOCKS A UNIQUE INDEX.  IT RETURNS THE TOTAL NUMBER
    OF CONTACTS BETWEEN BLOCKS. */
-int find_contacts1(int **CT,PDB_File *PDB,int nres,int nblx,double cut)
+int find_contacts1(int **CT, PDB_File *PDB, int nres, int nblx, double cut)
 {
-  int nc,i,j,k,ii,jj;
-  double csq=cut*cut,df,dd;
+  int nc, i, j, k, ii, jj;
+  double csq = cut*cut, df, dd;
 
-  for(i=1;i<=nres;i++){
-    ii=PDB->atom[i].model;
-    for(j=i+1;j<=nres;j++){
-      jj=PDB->atom[j].model;
+  for (i=1; i<=nres; i++){
+    ii = PDB->atom[i].model;
+    for (j=i+1; j<=nres; j++){
+      jj = PDB->atom[j].model;
 
-      if(ii!=jj && ii!=0 && jj!=0 && CT[ii][jj]==0){
-	dd=0.0;
-	for(k=0;k<3;k++){
-	  df=(double)PDB->atom[i].X[k]-PDB->atom[j].X[k];
-	  dd+=df*df;
-	}
-	if(dd<csq)
-	  CT[ii][jj]=CT[jj][ii]=1;
+      if (ii!=jj && ii!=0 && jj!=0 && CT[ii][jj]==0){
+	      dd=0.0;
+        for (k=0; k<3; k++){
+          df = (double)PDB->atom[i].X[k]-PDB->atom[j].X[k];
+          dd += df*df;
+        }
+        if (dd < csq)
+          CT[ii][jj] = CT[jj][ii] = 1;
       }
 
     }
   }
-  nc=0;
-  for(i=1;i<=nblx;i++)
-    for(j=i;j<=nblx;j++)
-      if(CT[i][j]!=0){
-	nc++;
-	CT[i][j]=CT[j][i]=nc;
+
+  nc = 0;
+  for (i=1; i<=nblx; i++)
+    for (j=i; j<=nblx; j++)
+      if (CT[i][j] != 0){
+        nc++;
+        CT[i][j] = CT[j][i] = nc;
       }
   return nc;
 }
@@ -647,76 +666,76 @@ int find_contacts1(int **CT,PDB_File *PDB,int nres,int nblx,double cut)
 /* "hess_superrow_mem" calculates the 'who'-th super-row
    of the Hessian, using 'cut' as the cutoff and 'gam' as the
    spring constant for all interactions. */
-void hess_superrow_mem(double **HR,int **CT,PDB_File *PDB,int nres,
-		       int who,double cut,double gam,double mscl,
-		       double mlo,double mhi)
+void hess_superrow_mem(double **HR, int **CT, PDB_File *PDB, int nres,
+                       int who, double cut, double gam, double mscl,
+                       double mlo, double mhi)
 {
-  int i,j,k,jj;
-  double DX[3],csq=cut*cut,dsq,df;
-  double s0,scl;
+  int i, j, k, jj;
+  double DX[3], csq=cut*cut, dsq, df, sdf;
+  double s0, scl;
 
-  s0=pow(mscl,0.25);
+  s0 = pow(mscl, 0.25);
 
   /* Clear the diagonal super-element */
-  for(i=1;i<=3;i++)
-    for(j=1;j<=3;j++)
-      HR[3*(who-1)+i][j]=0.0;
+  // for(i=1;i<=3;i++)
+  //   for(j=1;j<=3;j++)
+  //     HR[3*(who-1)+i][j]=0.0;
 
   /* Calculate the submatrices */
-  for(jj=1;jj<=nres;jj++){
+  for (jj=1; jj<=nres; jj++){
 
-    if(jj!=who && PDB->atom[jj].model!=0 &&
-       CT[PDB->atom[who].model][PDB->atom[jj].model]!=0){
+    if (jj!=who && PDB->atom[jj].model!=0 &&
+        CT[PDB->atom[who].model][PDB->atom[jj].model]!=0){
 
-      dsq=0.0;
-      for(k=0;k<3;k++){
-	DX[k] = (double)PDB->atom[who].X[k] - PDB->atom[jj].X[k];
-	dsq+=(DX[k]*DX[k]);
+      dsq = 0.0;
+      for (k=0; k<3; k++){
+        DX[k] = (double)PDB->atom[who].X[k] - PDB->atom[jj].X[k];
+        dsq += (DX[k]*DX[k]);
       }
 
 
-      if(dsq<csq){
-
-	/* --------- Membrane scaling -------- */
-	scl=1.0;
-	if ((mhi<mlo || PDB->atom[who].X[2] < mhi) && (PDB->atom[who].X[2] > mlo)) scl*=s0;
-	if ((mhi<mlo || PDB->atom[jj].X[2] < mhi) && (PDB->atom[jj].X[2] > mlo)) scl*=s0;
-
-
-	for(i=1;i<=3;i++){
-	  for(j=i;j<=3;j++){
-
-	    df=gam*DX[i-1]*DX[j-1]/dsq;
+      if (dsq < csq){
+        /* --------- Membrane scaling -------- */
+        scl = 1.0;
+        if (mhi<mlo || (PDB->atom[who].X[2] < mhi && PDB->atom[who].X[2] > mlo)) scl*=s0;
+        if (mhi<mlo || (PDB->atom[jj].X[2] < mhi && PDB->atom[jj].X[2] > mlo)) scl*=s0;
 
 
-	    /* Strong backbone bonds:
-	       NOTE:  *Not currently available! May be implemented later 
-	    if((int)fabs(PDB->atom[who].resnum-PDB->atom[jj].resnum)==1 &&
-	       PDB->atom[who].chain==PDB->atom[jj].chain)
-	      df*=100.0;
-	    */
+        for (i=1; i<=3; i++){
+          for (j=i; j<=3; j++){
+
+            // df = gam*DX[i-1]*DX[j-1]/dsq;
+            df = -HR[3*(jj-1)+i][j];
+            sdf = df;
+
+            /* Strong backbone bonds:
+              NOTE:  *Not currently available! May be implemented later 
+            if((int)fabs(PDB->atom[who].resnum-PDB->atom[jj].resnum)==1 &&
+              PDB->atom[who].chain==PDB->atom[jj].chain)
+              df*=100.0;
+            */
 
 
-	    /* -------- MEMBRANE RULES -------- */
-	    /* Scale lateral components */
-	    if(i!=3) df*=scl;
-	    if(j!=3) df*=scl;
+            /* -------- MEMBRANE RULES -------- */
+            /* Scale lateral components */
+            if (i!=3) sdf *= scl;
+            if (j!=3) sdf *= scl;
 
 
-	    /* Off-diagonal super-elements */
-	    HR[3*(jj-1)+i][j]=HR[3*(jj-1)+j][i]=-df;
+            /* Off-diagonal super-elements */
+            HR[3*(jj-1)+i][j] = HR[3*(jj-1)+j][i] = -sdf;
 
-	    /* Diagonal super-elements */
-	    HR[3*(who-1)+i][j]+=df;
-	    if(i!=j)
-	      HR[3*(who-1)+j][i]+=df;
-	  }
-	}
+            /* Diagonal super-elements */
+            HR[3*(who-1)+i][j] += sdf - df;
+            if (i!=j)
+              HR[3*(who-1)+j][i] += sdf - df;
+          }
+        }
       } /* <----- if(dsq<csq) */
-      else
-	for(i=1;i<=3;i++)
-	  for(j=1;j<=3;j++)
-	    HR[3*(jj-1)+i][j]=HR[3*(jj-1)+j][i]=0.0;
+      // else
+      //   for (i=1; i<=3; i++)
+      //     for (j=1; j<=3; j++)
+      //       HR[3*(jj-1)+i][j] = HR[3*(jj-1)+j][i] = 0.0;
     } /* <---- if(jj!=who &&...) */
   }
 }
@@ -799,15 +818,15 @@ double ***zero_d3tensor(long nrl,long nrh,long ncl,long nch,long ndl,long ndh)
 
 /* "zero_dmatrix" ALLOCATES MEMORY FOR A
    DOUBLE MATRIX AND INITIALIZES IT TO ZERO */
-double **zero_dmatrix(long nrl,long nrh,long ncl,long nch)
+double **zero_dmatrix(long nrl, long nrh, long ncl, long nch)
 {
   static double **M;
-  int i,j;
+  int i, j;
 
-  M=dmatrix(nrl,nrh,ncl,nch);
-  for(i=nrl;i<=nrh;i++)
-    for(j=ncl;j<=nch;j++)
-      M[i][j]=0.0;
+  M = dmatrix(nrl, nrh, ncl, nch);
+  for (i=nrl; i<=nrh; i++)
+    for (j=ncl; j<=nch; j++)
+      M[i][j] = 0.0;
   return M;
 }
 
@@ -936,7 +955,7 @@ double *dvector(long nl, long nh)
 {
 	double *v;
 
-	v=(double *)malloc((size_t) ((nh-nl+1+NR_END)*sizeof(double)));
+	v = (double *)malloc((size_t) ((nh-nl+1+NR_END)*sizeof(double)));
 	if (!v) nrerror("allocation failure in dvector()");
 	return v-nl+NR_END;
 }
@@ -988,9 +1007,10 @@ void free_d3tensor(double ***t, long nrl, long nrh, long ncl, long nch,
 void dsvdcmp(double **a, int m, int n, double w[], double **v)
 {
 	double dpythag(double a, double b);
-	int flag,i,its,j,jj,k,l,nm;
-	double anorm,c,f,g,h,s,scale,x,y,z,*rv1;
-	static int maxits=100;
+	int flag, i, its, j, jj, k, l;
+  int nm = 0;
+	double anorm, c, f, g, h, s, scale, x, y, z, *rv1;
+	static int maxits = 100;
 
 	rv1=dvector(1,n);
 	g=scale=anorm=0.0;
@@ -1194,7 +1214,15 @@ void deigsrt(double d[], double **v, int n)
 	}
 }
 
+double sum(double *a, int n)
+{
+  int i;
+  double s = 0;
+  for (i=0; i<n; i++)
+    s += a[i];
 
+  return s;
+}
 
 
 

@@ -22,10 +22,11 @@ are missing.  The following classes extend above to support this heterogeneity:
   * :class:`.PDBEnsemble`
   * :class:`.PDBConformation`
 
-Following functions are for editing PDB ensembles, e.g. finding and removing
-residues that are missing in too many structures:
-
-  * :func:`.alignPDBEnsemble`
+The following functions are for creating or editing PDB ensembles, e.g. finding and 
+removing residues that are missing in too many structures:
+  
+  * :func:`.buildPDBEnsemble`
+  * :func:`.alignByEnsemble`
   * :func:`.calcOccupancies`
   * :func:`.showOccupancies`
   * :func:`.trimPDBEnsemble`
@@ -56,6 +57,3 @@ from . import conformation
 from .conformation import *
 __all__.extend(conformation.__all__)
 
-from .functions import checkWeights
-ensemble.checkWeights = checkWeights
-pdbensemble.checkWeights = checkWeights

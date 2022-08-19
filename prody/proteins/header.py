@@ -113,9 +113,9 @@ class Polymer(object):
     sequence    str     polymer chain sequence (SEQRES)
     dbrefs      list    sequence database records (DBREF[1|2] and SEQADV),
                         see :class:`DBRef`
-    modified    list    | modified residues (SEQMOD)
+    modified    list    | modified residues (MODRES)
                         | when modified residues are present, each will be
-                          represented as: ``(resname, resnum, icode, stdname,
+                          represented as: ``(resname, chid, resnum, icode, stdname,
                           comment)``
     pdbentry    str     PDB entry that polymer data is extracted from
     ==========  ======  ======================================================
@@ -184,7 +184,9 @@ _PDB_DBREF = {
     'PDB': 'PDB',
     'UNP': 'UniProt',
     'NORINE': 'Norine',
-    'UNIMES': 'UNIMES'
+    'UNIMES': 'UNIMES',
+    'EMDB': 'EMDB',
+    'BMRB': 'BMRB'
 }
 
 
@@ -234,7 +236,7 @@ def cleanString(string, nows=False):
 
 
 def parsePDBHeader(pdb, *keys):
-    """Return header data dictionary for *pdb*.  This function is equivalent to
+    """Returns header data dictionary for *pdb*.  This function is equivalent to
     ``parsePDB(pdb, header=True, model=0, meta=False)``, likewise *pdb* may be
     an identifier or a filename.
 
@@ -273,10 +275,11 @@ def parsePDBHeader(pdb, *keys):
     HETNAM       chemicals         see :class:`Chemical`
     HETSYN       chemicals         see :class:`Chemical`
     FORMUL       chemicals         see :class:`Chemical`
-    REMARK 2     resolution        resolution of structures, when applicable
-    REMARK 4     version           PDB file version
+    REMARK   2   resolution        resolution of structures, when applicable
+    REMARK   4   version           PDB file version
     REMARK 350   biomoltrans       biomolecular transformation lines
                                    (unprocessed)
+    REMARK 900	 related_entries   related entries in the PDB or EMDB
     ============ ================= ============================================
 
     Header records that are not parsed are: OBSLTE, CAVEAT, SOURCE, KEYWDS,
@@ -293,14 +296,14 @@ def parsePDBHeader(pdb, *keys):
         else:
             raise IOError('{0} is not a valid filename or a valid PDB '
                           'identifier.'.format(pdb))
-    pdb = openFile(pdb)
+    pdb = openFile(pdb, 'rt')
     header, _ = getHeaderDict(pdb, *keys)
     pdb.close()
     return header
 
 
 def getHeaderDict(stream, *keys):
-    """Return header data in a dictionary.  *stream* may be a list of PDB lines
+    """Returns header data in a dictionary.  *stream* may be a list of PDB lines
     or a stream."""
 
     lines = defaultdict(list)
@@ -311,7 +314,8 @@ def getHeaderDict(stream, *keys):
             break
         lines[startswith].append((loc, line))
     if not loc:
-        raise ValueError('empty PDB file or stream')
+        #raise ValueError('empty PDB file or stream')
+        return None, loc
     for i, line in lines['REMARK']:
         lines[line[:10]].append((i, line))
 
@@ -350,24 +354,25 @@ def getHeaderDict(stream, *keys):
 
 def _getBiomoltrans(lines):
 
-    applyToChains = (' ')
+    
     biomolecule = defaultdict(list)
-    currentBiomolecule = '1'
     for i, line in lines['REMARK 350']:
-
-        if line[13:18] == 'BIOMT':
-            biomt = biomolecule[currentBiomolecule]
-            if len(biomt) == 0:
-                biomt.append(applyToChains)
-            biomt.append(line[23:])
-        elif line[11:41] == 'APPLY THE FOLLOWING TO CHAINS:':
-            applyToChains = line[41:].replace(' ',
-                                              '').strip().strip(',').split(',')
-        elif line[30:41] == 'AND CHAINS:':
+        if line[11:23] == 'BIOMOLECULE:':
+            currentBiomolecule = line.split()[-1]
+            applyToChains = []
+        elif line[11:41] == 'APPLY THE FOLLOWING TO CHAINS:' \
+        or line[30:41] == 'AND CHAINS:':
             applyToChains.extend(line[41:].replace(' ', '')
                                  .strip().strip(',').split(','))
-        elif line[11:23] == 'BIOMOLECULE:':
-            currentBiomolecule = line.split()[-1]
+        elif line[13:18] == 'BIOMT':
+            biomt = biomolecule[currentBiomolecule]
+            if line[13:19] == 'BIOMT1':
+                if applyToChains == []:
+                    applyToChains = biomt[0]
+                biomt.append(applyToChains)
+            elif line[13:19]:
+                applyToChains = []
+            biomt.append(line[23:])
     return dict(biomolecule)
 
 
@@ -379,6 +384,22 @@ def _getResolution(lines):
                 return float(line[23:30])
             except:
                 return None
+
+
+def _getRelatedEntries(lines):
+
+    dbrefs = []
+    for i, line in lines['REMARK 900']:
+        if 'RELATED ID' in line:
+            dbref = DBRef()
+            end_of_id = line.find('RELATED DB')
+            dbref.accession = line[23:end_of_id].strip()
+            dbref.dbabbr = line[end_of_id+12:end_of_id+16].strip()
+            dbref.database = _PDB_DBREF.get(dbref.dbabbr, 'Unknown')
+            
+            dbrefs.append(dbref)
+
+    return dbrefs
 
 
 def _getSpaceGroup(lines):
@@ -420,6 +441,28 @@ def _getHelix(lines):
     return helix
 
 
+def _getHelixRange(lines):
+
+    alphas = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    helix = []
+    for i, line in lines['HELIX ']:
+        try:
+            chid = line[19]
+            Hclass=int(line[38:40])
+            Hnr=int(line[7:10])
+        except:
+            continue
+
+        initResnum = int(line[21:25])
+        endICode = line[37]
+        endResnum = int(line[33:37])
+        if endICode != ' ':
+            endResnum -= 1
+        helix.append(['H', chid, Hclass, Hnr, initResnum, endResnum]) 
+     
+    return helix
+
+
 def _getSheet(lines):
 
     alphas = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -427,8 +470,8 @@ def _getSheet(lines):
     for i, line in lines['SHEET ']:
         try:
             chid = line[21]
-            value = (int(line[38:40]), int(line[7:10]),
-                     line[11:14].strip())
+                     # sense           # strand num     # sheet id
+            value = (int(line[38:40]), int(line[7:10]), line[11:14].strip())
         except:
             continue
 
@@ -449,8 +492,32 @@ def _getSheet(lines):
     return sheet
 
 
+def _getSheetRange(lines):
+
+    alphas = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    sheet = []
+    for i, line in lines['SHEET ']:
+        try:
+            chid = line[21]
+            dir = int(line[38:40])
+            Snr = int(line[7:10])
+        except:
+            continue
+
+        initICode = line[26]
+        initResnum = int(line[22:26])
+        if initICode != ' ':
+            initResnum += 1
+        endICode = line[37]
+        endResnum = int(line[33:37])
+        if endICode != ' ':
+            endResnum -= 1
+        sheet.append(['E', chid, dir, Snr, initResnum, endResnum])
+    return sheet
+
+
 def _getReference(lines):
-    """Return a reference of the PDB entry."""
+    """Returns a reference of the PDB entry."""
 
     ref = {}
     title = ''
@@ -489,7 +556,7 @@ def _getReference(lines):
 
 
 def _getPolymers(lines):
-    """Return list of polymers (macromolecules)."""
+    """Returns list of polymers (macromolecules)."""
 
     pdbid = lines['pdbid']
     polymers = dict()
@@ -581,10 +648,10 @@ def _getPolymers(lines):
         i += 1
         if line[12] == ' ':
             LOGGER.warn('DBREF2 chain identifier is not specified '
-                        '({0}:{1})'.format(pdbid, i, ch))
+                        '({0}:{1})'.format(pdbid, ch))
         elif line[12] != ch:
             LOGGER.warn('DBREF1 and DBREF2 chain id mismatch'
-                        '({0}:{1})'.format(pdbid, i, ch))
+                        '({0}:{1})'.format(pdbid, ch))
 
         dbref.accession = line[18:40].strip()
         try:
@@ -641,8 +708,9 @@ def _getPolymers(lines):
         polymers[ch] = poly
         if poly.modified is None:
             poly.modified = []
-        poly.modified.append((line[12:15].strip(), line[18:22].strip() +
-                              line[22].strip(), line[24:27].strip(),
+        poly.modified.append((line[12:15].strip(), line[16],
+                              line[18:22].strip() + line[22].strip(), 
+                              line[24:27].strip(),
                               line[29:70].strip()))
 
     for i, line in lines['SEQADV']:
@@ -650,7 +718,7 @@ def _getPolymers(lines):
         ch = line[16]
         if ch == ' ':
             if not len(polymers) == 1:
-                LOGGER.warn('MODRES chain identifier is not specified '
+                LOGGER.warn('SEQADV chain identifier is not specified '
                             '({0}:{1})'.format(pdbid, i))
                 continue
             else:
@@ -662,16 +730,16 @@ def _getPolymers(lines):
         try:
             resnum = int(line[18:22].strip())
         except:
+            #LOGGER.warn('SEQADV for chain {2}: failed to parse PDB sequence '
+            #            'number ({0}:{1})'.format(pdbid, i, ch))
             continue
-            LOGGER.warn('SEQADV for chain {2}: failed to parse PDB sequence '
-                        'number ({0}:{1})'.format(pdbid, i, ch))
         icode = line[22].strip()
         try:
             dbnum = int(line[43:48].strip())
         except:
-            continue
-            LOGGER.warn('SEQADV for chain {2}: failed to parse database '
-                        'sequence number ({0}:{1})'.format(pdbid, i, ch))
+            #LOGGER.warn('SEQADV for chain {2}: failed to parse database '
+            #            'sequence number ({0}:{1})'.format(pdbid, i, ch))
+            continue            
 
         comment = line[49:70].strip()
         match = False
@@ -686,7 +754,7 @@ def _getPolymers(lines):
                             repr(dbref.dbabbr), repr(dbabbr)))
                 continue
             dbacc = line[29:38].strip()
-            if dbref.accession != dbacc:
+            if dbref.accession[:9] != dbacc[:9]:
                 LOGGER.warn('SEQADV for chain {2}: accession code '
                             'mismatch, expected {3} parsed {4} '
                             '({0}:{1})'.format(pdbid, i, ch,
@@ -694,9 +762,9 @@ def _getPolymers(lines):
                 continue
             dbref.diff.append((resname, resnum, icode, dbnum, dbnum, comment))
         if not match:
-            continue
             LOGGER.warn('SEQADV for chain {2}: database sequence reference '
                         'not found ({0}:{1})'.format(pdbid, i, ch))
+            continue
 
     string = ' '.join([line[10:].strip() for i, line in lines['COMPND']])
     if string.startswith('MOL_ID'):
@@ -740,7 +808,7 @@ def _getPolymers(lines):
 
 
 def _getChemicals(lines):
-    """Return list of chemical components (heterogens)."""
+    """Returns list of chemical components (heterogens)."""
 
     chemicals = defaultdict(list)
     chem_names = defaultdict(str)
@@ -759,7 +827,7 @@ def _getChemicals(lines):
         chem_names[chem] += line[15:70].rstrip()
     for i, line in lines['HETSYN']:
         chem = line[11:14].strip()
-        chem_synonyms[chem] += line[15:70].rstrip()
+        chem_synonyms[chem] += line[15:70].strip()
     for i, line in lines['FORMUL']:
         chem = line[12:15].strip()
         chem_formulas[chem] += line[18:70].rstrip()
@@ -767,7 +835,7 @@ def _getChemicals(lines):
     for chem, name in chem_names.items():  # PY3K: OK
         name = cleanString(name)
         for chem in chemicals[chem]:
-            chem.name = name
+            chem.name = cleanString(name, nows=True)
     for chem, formula in chem_formulas.items():  # PY3K: OK
         formula = cleanString(formula)
         for chem in chemicals[chem]:
@@ -776,7 +844,7 @@ def _getChemicals(lines):
         synonyms = cleanString(synonyms)
         synonyms = synonyms.split(';')
         for chem in chemicals[chem]:
-            chem.synonyms = synonyms
+            chem.synonyms = [syn.strip() for syn in synonyms]
 
     alist = []
     for chem in chemicals.values():  # PY3K: OK
@@ -811,7 +879,9 @@ def _getNumModels(lines):
 # Make sure that lambda functions defined below won't raise exceptions
 _PDB_HEADER_MAP = {
     'helix': _getHelix,
+    'helix_range': _getHelixRange,
     'sheet': _getSheet,
+    'sheet_range': _getSheetRange,
     'chemicals': _getChemicals,
     'polymers': _getPolymers,
     'reference': _getReference,
@@ -841,6 +911,7 @@ _PDB_HEADER_MAP = {
                    ) if lines['MDLTYP'] else None,
     'n_models': _getNumModels,
     'space_group': _getSpaceGroup,
+    'related_entries': _getRelatedEntries,
 }
 
 mapHelix = {
@@ -856,8 +927,18 @@ mapHelix = {
     10: '',  # Polyproline
 }
 
+def isHelix(secstrs):
+    torf = np.logical_and(secstrs=='', False)
+    for h in mapHelix.values():
+        if h != '':
+            torf = np.logical_or(torf, secstrs==h)
+    return torf
 
-def assignSecstr(header, atoms, coil=False):
+def isSheet(secstrs):
+    torf = secstrs == 'E'
+    return torf
+
+def assignSecstr(header, atoms, coil=True):
     """Assign secondary structure from *header* dictionary to *atoms*.
     *header* must be a dictionary parsed using the :func:`.parsePDB`.
     *atoms* may be an instance of :class:`.AtomGroup`, :class:`.Selection`,
@@ -904,7 +985,8 @@ def assignSecstr(header, atoms, coil=False):
     helix = header.get('helix', {})
     sheet = header.get('sheet', {})
     if len(helix) == 0 and len(sheet) == 0:
-        raise ValueError('header does not contain secondary structure data')
+        #LOGGER.warn('header does not contain secondary structure data')
+        return atoms
 
     ssa = atoms.getSecstrs()
     if ssa is None:
@@ -914,7 +996,16 @@ def assignSecstr(header, atoms, coil=False):
             ag = atoms.getAtomGroup()
         ag.setSecstrs(np.zeros(ag.numAtoms(),
                       ATOMIC_FIELDS['secondary'].dtype))
-    atoms.select('protein').setSecstrs('C')
+        ag.setSecids(np.zeros(ag.numAtoms(),
+                      ATOMIC_FIELDS['secid'].dtype))
+        ag.setSecclasses(np.zeros(ag.numAtoms(),
+                      ATOMIC_FIELDS['secclass'].dtype)) 
+        ag.setSecindices(np.zeros(ag.numAtoms(),
+                      ATOMIC_FIELDS['secindex'].dtype))  
+
+    prot = atoms.select('protein')
+    if prot is not None and coil:
+        prot.setSecstrs('C')
     hierview = atoms.getHierView()
     count = 0
     getResidue = hierview.getResidue
@@ -922,21 +1013,30 @@ def assignSecstr(header, atoms, coil=False):
         res = getResidue(*key)
         if res is None:
             continue
+        res.setSecids(value[2])
+        res.setSecclasses(value[0])
+        res.setSecindices(value[1])
         res.setSecstrs(mapHelix[value[0]])
+        
         count += 1
-    for key, res in sheet.items():  # PY3K: OK
+    for key, value in sheet.items():  # PY3K: OK
         res = getResidue(*key)
         if res is None:
             continue
+        res.setSecids(value[2])
+        res.setSecclasses(value[0])
+        res.setSecindices(value[1])
         res.setSecstrs('E')
         count += 1
+
     LOGGER.info('Secondary structures were assigned to {0} residues.'
                 .format(count))
+
     return atoms
 
 
 def buildBiomolecules(header, atoms, biomol=None):
-    """Return *atoms* after applying biomolecular transformations from *header*
+    """Returns *atoms* after applying biomolecular transformations from *header*
     dictionary.  Biomolecular transformations are applied to all coordinate
     sets in the molecule.
 
@@ -954,18 +1054,24 @@ def buildBiomolecules(header, atoms, biomol=None):
     :class:`.AtomGroup` instances will be returned in a tuple.
 
     Note that atoms in biomolecules are ordered according to chain identifiers.
+    When multiple chains in a biomolecule have the same chain identifier, they 
+    are given different segment names to distinguish them.
     """
 
     if not isinstance(header, dict):
         raise TypeError('header must be a dictionary')
+
     if not isinstance(atoms, Atomic):
         raise TypeError('atoms must be an Atomic instance')
+
     biomt = header.get('biomoltrans')
     if not isinstance(biomt, dict) or len(biomt) == 0:
-        raise ValueError("header doesn't contain biomolecular transformations")
+        LOGGER.warn("no biomolecular transformations found so original structure was used")
+        return atoms
 
     if not isinstance(atoms, AtomGroup):
         atoms = atoms.copy()
+
     biomols = []
     if biomol is None:
         keys = list(biomt)
@@ -986,26 +1092,26 @@ def buildBiomolecules(header, atoms, biomol=None):
         # mt is a list, first item is list of chain identifiers
         # following items are lines corresponding to transformation
         # mt must have 3n + 1 lines
-        if (len(mt) - 1) % 3 != 0:
+        if (len(mt)) % 4 != 0:
             LOGGER.warn('Biomolecular transformations {0} were not '
                         'applied'.format(i))
             continue
 
-        for times in range(int((len(mt) - 1) / 3)):
+        for times in range(int((len(mt)) / 4)):
             rotation = np.zeros((3, 3))
             translation = np.zeros(3)
-            line = np.fromstring(mt[times*3+1], sep=' ')
-            rotation[0, :] = line[:3]
-            translation[0] = line[3]
-            line = np.fromstring(mt[times*3+2], sep=' ')
-            rotation[1, :] = line[:3]
-            translation[1] = line[3]
-            line = np.fromstring(mt[times*3+3], sep=' ')
-            rotation[2, :] = line[:3]
-            translation[2] = line[3]
+            line0 = np.fromstring(mt[times*4+1], sep=' ')
+            rotation[0, :] = line0[:3]
+            translation[0] = line0[3]
+            line1 = np.fromstring(mt[times*4+2], sep=' ')
+            rotation[1, :] = line1[:3]
+            translation[1] = line1[3]
+            line2 = np.fromstring(mt[times*4+3], sep=' ')
+            rotation[2, :] = line2[:3]
+            translation[2] = line2[3]
             t = Transformation(rotation, translation)
 
-            newag = atoms.select('chain ' + ' '.join(mt[0])).copy()
+            newag = atoms.select('chain ' + ' '.join(mt[times*4+0])).copy()
             if newag is None:
                 continue
             newag.all.setSegnames(segnm.pop(0))
@@ -1014,6 +1120,7 @@ def buildBiomolecules(header, atoms, biomol=None):
                 newag = t.apply(newag)
             newag.setACSIndex(0)
             ags.append(newag)
+
         if ags:
             newag = ags.pop(0)
             while ags:
@@ -1021,6 +1128,7 @@ def buildBiomolecules(header, atoms, biomol=None):
             newag.setTitle('{0} biomolecule {1}'
                            .format(atoms.getTitle(), i))
             biomols.append(newag)
+            
     if biomols:
         if len(biomols) == 1:
             return biomols[0]

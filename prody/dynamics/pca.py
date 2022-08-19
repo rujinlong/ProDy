@@ -10,7 +10,7 @@ from prody import LOGGER, PY2K
 from prody.atomic import Atomic
 from prody.ensemble import Ensemble, PDBEnsemble
 from prody.trajectory import TrajBase
-from prody.utilities import importLA
+from prody.utilities import importLA, solveEig, ZERO
 
 from .nma import NMA
 
@@ -29,18 +29,30 @@ class PCA(NMA):
 
         NMA.__init__(self, name)
 
-    def setCovariance(self, covariance):
+    def setCovariance(self, covariance, is3d=True):
         """Set covariance matrix."""
 
         if not isinstance(covariance, np.ndarray):
             raise TypeError('covariance must be an ndarray')
         elif not (covariance.ndim == 2 and
                   covariance.shape[0] == covariance.shape[1]):
-            raise TypeError('covariance must be square matrix')
+            raise ValueError('covariance must be square matrix')
+        elif covariance.dtype != float:
+            try:
+                covariance = covariance.astype(float)
+            except:
+                raise ValueError('covariance.dtype must be float')
+
         self._reset()
+
+        self._is3d = is3d
         self._cov = covariance
         self._dof = covariance.shape[0]
-        self._n_atoms = self._dof / 3
+
+        if is3d:
+            self._n_atoms = self._dof // 3
+        else:
+            self._n_atoms = self._dof
         self._trace = self._cov.trace()
 
     def buildCovariance(self, coordsets, **kwargs):
@@ -89,6 +101,7 @@ class PCA(NMA):
             coordsets = coordsets._getCoordsets()
 
         update_coords = bool(kwargs.get('update_coords', False))
+        quiet = kwargs.pop('quiet', False)
 
         if isinstance(coordsets, TrajBase):
             nfi = coordsets.nextIndex()
@@ -99,10 +112,12 @@ class PCA(NMA):
             #mean = coordsets._getCoords().flatten()
             n_confs = 0
             n_frames = len(coordsets)
-            LOGGER.info('Covariance will be calculated using {0} frames.'
-                        .format(n_frames))
+            if not quiet:
+                LOGGER.info('Covariance will be calculated using {0} frames.'
+                            .format(n_frames))
             coordsum = np.zeros(dof)
-            LOGGER.progress('Building covariance', n_frames, '_prody_pca')
+            if not quiet:
+                LOGGER.progress('Building covariance', n_frames, '_prody_pca')
             align = not kwargs.get('aligned', False)
             for frame in coordsets:
                 if align:
@@ -111,8 +126,10 @@ class PCA(NMA):
                 coordsum += coords
                 cov += np.outer(coords, coords)
                 n_confs += 1
-                LOGGER.update(n_confs, '_prody_pca')
-            LOGGER.clear()
+                if not quiet:
+                    LOGGER.update(n_confs, label='_prody_pca')
+            if not quiet:
+                LOGGER.finish()
             cov /= n_confs
             coordsum /= n_confs
             mean = coordsum
@@ -130,8 +147,9 @@ class PCA(NMA):
             if n_atoms < 3:
                 raise ValueError('coordsets must have more than 3 atoms')
             dof = n_atoms * 3
-            LOGGER.info('Covariance is calculated using {0} coordinate sets.'
-                        .format(len(coordsets)))
+            if not quiet:
+                LOGGER.info('Covariance is calculated using {0} coordinate sets.'
+                            .format(len(coordsets)))
             s = (n_confs, dof)
             if weights is None:
                 if coordsets.dtype == float:
@@ -141,13 +159,16 @@ class PCA(NMA):
                     cov = np.zeros((dof, dof))
                     coordsets = coordsets.reshape((n_confs, dof))
                     mean = coordsets.mean(0)
-                    LOGGER.progress('Building covariance', n_confs,
+                    if not quiet:
+                        LOGGER.progress('Building covariance', n_confs,
                                     '_prody_pca')
                     for i, coords in enumerate(coordsets.reshape(s)):
                         deviations = coords - mean
                         cov += np.outer(deviations, deviations)
-                        LOGGER.update(n_confs, '_prody_pca')
-                    LOGGER.clear()
+                        if not quiet:
+                            LOGGER.update(n_confs, label='_prody_pca')
+                    if not quiet:
+                        LOGGER.finish()
                     cov /= n_confs
                     self._cov = cov
             else:
@@ -168,7 +189,8 @@ class PCA(NMA):
         self._trace = self._cov.trace()
         self._dof = dof
         self._n_atoms = n_atoms
-        LOGGER.report('Covariance matrix calculated in %2fs.', '_prody_pca')
+        if not quiet:
+            LOGGER.report('Covariance matrix calculated in %2fs.', '_prody_pca')
 
     def calcModes(self, n_modes=20, turbo=True):
         """Calculate principal (or essential) modes.  This method uses
@@ -176,45 +198,33 @@ class PCA(NMA):
         to diagonalize the covariance matrix.
 
         :arg n_modes: number of non-zero eigenvalues/vectors to calculate,
-            default is 20, for **None** all modes will be calculated
+            default is 20,
+            if **None** or ``'all'`` is given, all modes will be calculated
         :type n_modes: int
 
         :arg turbo: when available, use a memory intensive but faster way to
             calculate modes, default is **True**
         :type turbo: bool"""
-
-        linalg = importLA()
+        
         if self._cov is None:
             raise ValueError('covariance matrix is not built or set')
         start = time.time()
-        dof = self._dof
-        if linalg.__package__.startswith('scipy'):
-            if n_modes is None:
-                eigvals = None
-                n_modes = dof
-            else:
-                n_modes = int(n_modes)
-                if n_modes >= self._dof:
-                    eigvals = None
-                    n_modes = dof
-                else:
-                    eigvals = (dof - n_modes, dof - 1)
-            values, vectors = linalg.eigh(self._cov, turbo=turbo,
-                                          eigvals=eigvals)
-        else:
-            if n_modes is not None:
-                LOGGER.info('Scipy is not found, all modes are calculated.')
-            values, vectors = linalg.eigh(self._cov)
-        # Order by descending SV
-        revert = list(range(len(values)-1, -1, -1))
-        values = values[revert]
-        vectors = vectors[:, revert]
-        which = values > 1e-8
+        self._clear()
+        if str(n_modes).lower() == 'all':
+            n_modes = None
+        
+        values, vectors, _ = solveEig(self._cov, n_modes=n_modes, zeros=True, 
+                                      turbo=turbo, reverse=True)
+        which = values > ZERO
         self._eigvals = values[which]
         self._array = vectors[:, which]
-        self._vars = self._eigvals
+        self._vars = values[which]
         self._n_modes = len(self._eigvals)
-        LOGGER.debug('{0} modes were calculated in {1:.2f}s.'
+        if self._n_modes > 1:
+            LOGGER.debug('{0} modes were calculated in {1:.2f}s.'
+                     .format(self._n_modes, time.time()-start))
+        else:
+            LOGGER.debug('{0} mode was calculated in {1:.2f}s.'
                      .format(self._n_modes, time.time()-start))
 
     def performSVD(self, coordsets):
@@ -250,10 +260,10 @@ class PCA(NMA):
                               coordsets._getCoords())
 
         n_confs = deviations.shape[0]
-        if n_confs < 3:
+        if n_confs <= 3:
             raise ValueError('coordsets must have more than 3 coordinate sets')
         n_atoms = deviations.shape[1]
-        if n_atoms < 3:
+        if n_atoms <= 3:
             raise ValueError('coordsets must have more than 3 atoms')
 
         dof = n_atoms * 3
@@ -285,6 +295,7 @@ class PCA(NMA):
         """Set eigen *vectors* and eigen *values*.  If eigen *values* are
         omitted, they will be set to 1.  Eigenvalues are set as variances."""
 
+        self._clear()
         NMA.setEigens(self, vectors, values)
         self._vars = self._eigvals
 

@@ -6,12 +6,13 @@ import numpy as np
 from .mode import Mode
 from .modeset import ModeSet
 
-from prody import PY2K
+from prody import PY2K, LOGGER
+from prody.utilities import isListLike
 
 if PY2K:
     range = xrange
 
-__all__ = ['NMA']
+__all__ = ['NMA', 'MaskedNMA']
 
 class NMA(object):
 
@@ -42,12 +43,12 @@ class NMA(object):
             raise ValueError('{0} modes are not calculated, use '
                              'calcModes() method'.format(str(self)))
         if isinstance(index, slice):
+            if (index.stop is not None and index.stop > self.numModes()) or (index.start is not None and index.start > self.numModes()):
+                LOGGER.warn('The selection index contains a higher number than the total mode number ({0})'.format(self.numModes()))
             indices = np.arange(*index.indices(len(self)))
             if len(indices) > 0:
                 return ModeSet(self, indices)
-        elif isinstance(index, (list, tuple)):
-            for i in index:
-                assert isinstance(i, int), 'all indices must be integers'
+        elif isinstance(index, (list, tuple, np.ndarray)):
             if len(index) == 1:
                 return self._getMode(index[0])
             return ModeSet(self, index)
@@ -87,6 +88,9 @@ class NMA(object):
 
         self._is3d = True
 
+    def _clear(self):
+        pass
+
     def _getMode(self, index):
 
         if self._n_modes == 0:
@@ -100,7 +104,7 @@ class NMA(object):
         return Mode(self, index)
 
     def _getTrace(self):
-        """Return trace, and emit a warning message if trace is calculated
+        """Returns trace, and emit a warning message if trace is calculated
         using eigenvalues of a subset of variances (eigenvalues or inverse
         eigenvalues)."""
 
@@ -124,33 +128,41 @@ class NMA(object):
         return trace
 
     def getModel(self):
-        """Return self."""
+        """Returns self."""
 
         return self
 
     def is3d(self):
-        """Return **True** if model is 3-dimensional."""
+        """Returns **True** if model is 3-dimensional."""
 
         return self._is3d
 
     def numAtoms(self):
-        """Return number of atoms."""
+        """Returns number of atoms."""
 
         return self._n_atoms
 
     def numModes(self):
-        """Return number of modes in the instance (not necessarily maximum
+        """Returns number of modes in the instance (not necessarily maximum
         number of possible modes)."""
 
         return self._n_modes
 
     def numDOF(self):
-        """Return number of degrees of freedom."""
+        """Returns number of degrees of freedom."""
 
         return self._dof
 
+    def numEntries(self):
+        """Returns number of entries in one eigenvector."""
+        
+        arr = self._getArray()
+        if arr is None:
+            return 0
+        return arr.shape[0]
+
     def getTitle(self):
-        """Return title of the model."""
+        """Returns title of the model."""
 
         return self._title
 
@@ -160,7 +172,7 @@ class NMA(object):
         self._title = str(title)
 
     def getEigvals(self):
-        """Return eigenvalues.  For :class:`.PCA` and :class:`.EDA` models
+        """Returns eigenvalues.  For :class:`.PCA` and :class:`.EDA` models
         built using coordinate data in Å, unit of eigenvalues is |A2|.  For
         :class:`.ANM`, :class:`.GNM`, and :class:`.RTB`, on the other hand,
         eigenvalues are in arbitrary or relative units but they correlate with
@@ -170,7 +182,7 @@ class NMA(object):
         return self._eigvals.copy()
 
     def getVariances(self):
-        """Return variances.  For :class:`.PCA` and :class:`.EDA` models
+        """Returns variances.  For :class:`.PCA` and :class:`.EDA` models
         built using coordinate data in Å, unit of variance is |A2|.  For
         :class:`.ANM`, :class:`.GNM`, and :class:`.RTB`, on the other hand,
         variance is the inverse of the eigenvalue, so it has arbitrary or
@@ -180,42 +192,37 @@ class NMA(object):
         return self._vars.copy()
 
     def getArray(self):
-        """Return a copy of eigenvectors array."""
+        """Returns a copy of eigenvectors array."""
 
         if self._array is None: return None
-        return self._array.copy()
+        return self._getArray().copy()
 
     getEigvecs = getArray
 
     def _getArray(self):
-        """Return eigenvectors array."""
+        """Returns eigenvectors array."""
 
         if self._array is None: return None
         return self._array
 
     def getCovariance(self):
-        """Return covariance matrix.  If covariance matrix is not set or yet
+        """Returns covariance matrix.  If covariance matrix is not set or yet
         calculated, it will be calculated using available modes."""
 
         if self._cov is None:
-            if self._array is None:
+            array = self.getArray()
+            if array is None:
                 return None
-            self._cov = np.dot(self._array, np.dot(np.diag(self._vars),
-                                                   self._array.T))
+            self._cov = np.dot(array, np.dot(np.diag(self._vars), array.T))
         return self._cov
 
     def calcModes(self):
         """"""
 
-        pass
-
     def addEigenpair(self, vector, value=None):
         """Add eigen *vector* and eigen *value* pair(s) to the instance.
         If eigen *value* is omitted, it will be set to 1.  Inverse
         eigenvalues are set as variances."""
-
-        if self._array is None:
-            self.setEigens()
 
         try:
             ndim, shape = vector.ndim, vector.shape
@@ -228,6 +235,8 @@ class NMA(object):
             raise ValueError('eigenvectors must correspond to vector columns')
         else:
             vector = vector.reshape((shape[0], 1))
+
+        eigval = value
 
         if eigval is None:
             if ndim == 1:
@@ -248,6 +257,9 @@ class NMA(object):
                 elif value.shape[0] != value.shape[0]:
                     raise ValueError('number of eigenvectors and eigenvalues '
                                      'must match')
+
+        if self._array is None:
+            return self.setEigens(vector, value)
 
         if vector.shape[0] != self._array.shape[0]:
             raise ValueError('shape of vector do not match shape of '
@@ -272,12 +284,12 @@ class NMA(object):
         else:
             dof = shape[0]
             if self._is3d:
-                n_atoms = dof / 3
+                n_atoms = dof // 3
             else:
                 n_atoms = dof
             if self._n_atoms > 0 and n_atoms != self._n_atoms:
-                    raise ValueError('vectors do not have the right shape, '
-                                 'which is (M,{0})'.format(n_atoms*3))
+                LOGGER.warn('the number of atoms of the model will be changed to {0}'
+                            .format(n_atoms))
             n_modes = vectors.shape[1]
         if values is not None:
             if not isinstance(vectors, np.ndarray):
@@ -298,4 +310,160 @@ class NMA(object):
         self._n_modes = n_modes
         self._vars = 1 / values
 
+        self._clear()
 
+    def getIndices(self):
+      if self._indices is not None:
+        return self._indices
+      else:
+        return np.arange(self.numModes())
+
+class MaskedNMA(NMA):
+    def __init__(self, name='Unknown', mask=False, masked=True):
+        if isinstance(name, str):
+            super(MaskedNMA, self).__init__(name)
+        else:
+            model = name
+            name = model.getTitle()
+            super(MaskedNMA, self).__init__(name)
+            self.__dict__.update(model.__dict__)
+            
+        self.mask = False
+        self.masked = masked
+        self._maskedarray = None
+
+        if not np.isscalar(mask):
+            self.mask = np.array(mask)
+
+    def _isOriginal(self):
+        return self.masked or np.isscalar(self.mask)
+
+    def __repr__(self):
+        if self._isOriginal():
+            n_dummies = 0
+        else:
+            n_dummies = len(self.mask) - self._n_atoms
+
+        return ('<{0}: {1} ({2} modes; {3} nodes + {4} dummies)>'
+                .format(self.__class__.__name__, self._title, self.__len__(), 
+                        self._n_atoms, n_dummies))
+
+    def numAtoms(self):
+        """Returns number of atoms."""
+
+        if self._isOriginal():
+            return self._n_atoms
+        else:
+            return len(self.mask)
+
+    def _extend(self, arr, axis=None, defval=0):
+        mask = self.mask#.copy()
+        if self.is3d():
+            mask = np.repeat(mask, 3)
+
+        n_true = np.sum(mask)
+        N = len(mask)
+
+        if axis is None:
+            axes = [i for i in range(arr.ndim)]
+        elif not isListLike(axis):
+            axes = [axis]
+        else:
+            axes = axis
+
+        shape = np.array(arr.shape)
+        shape[axes] = N
+
+        whole_array = np.empty(shape, dtype=arr.dtype)
+        whole_array.fill(defval)
+
+        I = [np.arange(s) for s in shape]
+        J = [np.arange(s) for s in arr.shape]
+
+        for ax in axes:
+            I[ax] = mask
+            J[ax] = np.arange(n_true)
+
+        whole_array[np.ix_(*I)] = arr[np.ix_(*J)]
+
+        return whole_array
+
+    def _getArray(self):
+        """Returns eigenvectors array. The function returns 
+        a copy of the array if *masked* is **True**."""
+
+        if self._array is None: return None
+
+        if self._isOriginal():
+            array = self._array
+        else:
+            if self._maskedarray is None:
+                array = self._maskedarray = self._extend(self._array, axis=0)
+            else:
+                array = self._maskedarray
+
+        return array
+
+    def setNumAtoms(self, n_atoms):
+        """Fixes the tail of the model. If *n_atoms* is greater than the original size 
+        (number of nodes), then extra hidden nodes will be added to the model, and if 
+        not, the model will be trimmed so that the total number of nodes, including the 
+        hidden ones, will be equal to the *n_atoms*. Note that if *masked* is **True**, 
+        the *n_atoms* should be the number of *visible* nodes.
+
+        :arg n_atoms: number of atoms of the model 
+        :type n_atoms: int
+        """
+        def _fixLength(vector, length, filled_value=0, axis=0):
+            shape = vector.shape
+            dim = len(shape)
+
+            if shape[axis] < length:
+                dl = length - shape[0]
+                pad_width = []
+                for i in range(dim):
+                    if i == axis:
+                        pad_width.append((0, dl))
+                    else:
+                        pad_width.append((0, 0))
+                vector = np.pad(vector, pad_width, 'constant', constant_values=(filled_value,))
+            elif shape[axis] > length:
+                vector = vector[:length]
+            return vector
+
+        trimmed = self.masked
+        if trimmed:
+            trimmed_length = self.numAtoms()
+            self.masked = False
+            extra_length = self.numAtoms() - trimmed_length
+            n_atoms += extra_length
+
+        if np.isscalar(self.mask):
+            self.mask = np.ones(self.numAtoms(), dtype=bool)
+
+        self.mask = _fixLength(self.mask, n_atoms, False)
+        self.masked = trimmed
+        self._n_atoms = np.sum(self.mask, dtype=int)
+        return
+
+    def setEigens(self, vectors, values=None):
+        mask = self.mask
+        if not self.masked:
+            if not np.isscalar(mask):
+                if self.is3d():
+                    mask = np.repeat(mask, 3)
+                try:
+                    vectors = vectors[mask, :]
+                except IndexError:
+                    raise IndexError('size mismatch between vectors (%d) and mask (%d).'
+                                     'Try set masked to False or reset mask'%(vectors.shape[0], len(mask)))
+        self._maskedarray = None
+        super(MaskedNMA, self).setEigens(vectors, values)
+
+    def calcModes(self):
+        self._maskedarray = None
+        super(MaskedNMA, self).calcModes()
+
+    def _reset(self):
+        super(MaskedNMA, self)._reset()
+        self._maskedarray = None

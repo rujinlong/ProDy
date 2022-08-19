@@ -7,7 +7,7 @@ from os.path import abspath, isdir, isfile, join, split, splitext, normpath
 
 from prody import LOGGER, SETTINGS
 from prody.utilities import makePath, gunzip, relpath, copyFile, isWritable
-from prody.utilities import sympath
+from prody.utilities import sympath, isListLike
 
 from . import wwpdb
 from .wwpdb import checkIdentifiers, fetchPDBviaFTP, fetchPDBviaHTTP
@@ -15,10 +15,11 @@ from .wwpdb import checkIdentifiers, fetchPDBviaFTP, fetchPDBviaHTTP
 
 __all__ = ['pathPDBFolder', 'pathPDBMirror',
            'fetchPDB', 'fetchPDBfromMirror',
-           'iterPDBFilenames', 'findPDBFiles']
+           'iterPDBFilenames', 'findPDBFiles',
+           'fetchPDBs']
 
 def pathPDBFolder(folder=None, divided=False):
-    """Return or specify local PDB folder for storing PDB files downloaded from
+    """Returns or specify local PDB folder for storing PDB files downloaded from
     `wwPDB <http://www.wwpdb.org/>`_ servers.  Files stored in this folder can
     be accessed via :func:`.fetchPDB` from any working directory.  To release
     the current folder, pass an invalid path, e.g. ``folder=''``.
@@ -66,9 +67,8 @@ def pathPDBFolder(folder=None, divided=False):
 
 wwpdb.pathPDBFolder = pathPDBFolder
 
-
 def pathPDBMirror(path=None, format=None):
-    """Return or specify PDB mirror path to be used by :func:`.fetchPDB`.
+    """Returns or specify PDB mirror path to be used by :func:`.fetchPDB`.
     To release the current mirror, pass an invalid path, e.g. ``path=''``.
     If you are keeping a partial mirror, such as PDB files in
     :file:`/data/structures/divided/pdb/` folder, specify *format*, which is
@@ -105,7 +105,7 @@ def pathPDBMirror(path=None, format=None):
 
 
 def fetchPDBfromMirror(*pdb, **kwargs):
-    """Return path(s) to PDB (default), PDBML, or mmCIF file(s) for specified
+    """Returns path(s) to PDB (default), PDBML, or mmCIF file(s) for specified
     *pdb* identifier(s).  If a *folder* is specified, files will be copied
     into this folder.  If *compressed* is **False**, files will decompressed.
     *format* argument can be used to get `PDBML <http://pdbml.pdb.org/>`_ and
@@ -190,26 +190,24 @@ def fetchPDBfromMirror(*pdb, **kwargs):
 
     if len(identifiers) == 1:
         fn = filenames[0]
-        if kwargs.get('report', True):
-            if success:
-                LOGGER.debug('PDB file is found in the local mirror ({0}).'
-                             .format(sympath(fn)))
+        if success:
+            LOGGER.debug('PDB file is found in the local mirror ({0}).'
+                            .format(sympath(fn)))
         return fn
     else:
-        if kwargs.get('report', True):
-            LOGGER.debug('PDB files found in the local mirror ({0} found, '
-                         '{1} missed).'.format(success, failure))
+        LOGGER.debug('PDB files found in the local mirror ({0} found, '
+                        '{1} missed).'.format(success, failure))
         return filenames
 
 
 def fetchPDB(*pdb, **kwargs):
-    """Return path(s) to PDB file(s) for specified *pdb* identifier(s).  Files
-    will be sought in user specified *folder* or current working director, and
+    """Returns path(s) to PDB file(s) for specified *pdb* identifier(s).  Files
+    will be sought in user specified *folder* or current working directory, and
     then in local PDB folder and mirror, if they are available.  If *copy*
     is set **True**, files will be copied into *folder*.  If *compressed* is
-    **False**, all files will be decompressed.  See :func:`pathPDBFolder` and
-    :func:`pathPDBMirror` for managing local resources, :func:`.fetchPDBviaFTP`
-    and :func:`.fetchPDBviaFTP` for downloading files from PDB servers."""
+    **False**, all files will be decompressed into *folder*.  See :func:`pathPDBFolder` 
+    and :func:`pathPDBMirror` for managing local resources, :func:`.fetchPDBviaFTP`
+    and :func:`.fetchPDBviaHTTP` for downloading files from PDB servers."""
 
     if len(pdb) == 1 and isinstance(pdb[0], list):
         pdb = pdb[0]
@@ -286,14 +284,13 @@ def fetchPDB(*pdb, **kwargs):
     if not not_found:
         if len(identifiers) == 1:
             fn = filenames[0]
-            if kwargs.get('report', True):
-                items = fn.split(pathsep)
-                if len(items) > 5:
-                    fndisp = pathsep.join(items[:3] + ['...'] + items[-1:])
-                else:
-                    fndisp = relpath(fn)
-                LOGGER.debug('PDB file is found in the local folder ({0}).'
-                             .format(fndisp))
+            items = fn.split(pathsep)
+            if len(items) > 5:
+                fndisp = pathsep.join(items[:3] + ['...'] + items[-1:])
+            else:
+                fndisp = relpath(fn)
+            LOGGER.debug('PDB file is found in the local folder ({0}).'
+                            .format(fndisp))
             return fn
         else:
             return filenames
@@ -323,17 +320,47 @@ def fetchPDB(*pdb, **kwargs):
 
     if fns:
         downloads = [pdb for i, pdb in not_found]
+
     fns = None
-    try:
-        fns = fetchPDBviaFTP(*downloads, check=False, **kwargs)
-    except Exception as err:
-        LOGGER.warn('Downloading PDB files via FTP failed ({0}), '
-                    'trying HTTP.'.format(str(err)))
+
+    tp = kwargs.pop('tp', None)
+    if tp is not None:
+        tp = tp.lower()
+    
+    if tp == 'http':
         try:
             fns = fetchPDBviaHTTP(*downloads, check=False, **kwargs)
         except Exception as err:
-            LOGGER.warn('Downloading PDB files via HTTP also failed '
+            LOGGER.warn('Downloading PDB files via HTTP failed '
                         '({0}).'.format(str(err)))
+    elif tp == 'ftp':
+        try:
+            fns = fetchPDBviaFTP(*downloads, check=False, **kwargs)
+        except Exception as err:
+            LOGGER.warn('Downloading PDB files via FTP failed '
+                        '({0}).'.format(str(err)))
+    else:
+        tryHTTP = False
+        try:
+            fns = fetchPDBviaFTP(*downloads, check=False, **kwargs)
+        except Exception as err:
+            tryHTTP = True
+   
+        if fns is None or isinstance(fns, list) and None in fns:
+            tryHTTP = True
+        elif isinstance(fns, list): 
+            downloads = [not_found[i][1] for i in range(len(fns)) if fns[i] is None]
+            if len(downloads) > 0: 
+                tryHTTP = True
+        if tryHTTP:
+            LOGGER.info('Downloading PDB files via FTP failed, '
+                        'trying HTTP.')
+            try:
+                fns = fetchPDBviaHTTP(*downloads, check=False, **kwargs)
+            except Exception as err:
+                LOGGER.warn('Downloading PDB files via HTTP also failed '
+                            '({0}).'.format(str(err)))
+    
     if len(downloads) == 1: fns = [fns]
     if fns:
         for i, fn in zip([i for i, pdb in not_found], fns):
@@ -341,6 +368,42 @@ def fetchPDB(*pdb, **kwargs):
 
     return filenames[0] if len(identifiers) == 1 else filenames
 
+def fetchPDBs(*pdb, **kwargs):
+    """"Wrapper function to fetch multiple files from the PDB. 
+    If no format is given, it tries PDB then mmCIF then EMD.
+    
+    :arg pdb: one PDB identifier or filename, or a list of them.
+        If needed, PDB files are downloaded using :func:`.fetchPDB()` function.
+    """
+
+    n_pdb = len(pdb)
+    if n_pdb == 0:
+        raise ValueError('Please provide a PDB ID or filename')
+
+    if n_pdb == 1:
+        if isListLike(pdb[0]):
+            pdb = pdb[0]
+            n_pdb = len(pdb)
+
+    fnames = []
+    for p in pdb:
+        format = kwargs.pop('format', None)
+        
+        if format is not None:
+            filename = fetchPDB(p, format=format, **kwargs)
+
+        else:
+            filename = fetchPDB(p, **kwargs)
+
+            if filename is None:
+                filename = fetchPDB(p, format='cif', **kwargs)
+
+            if filename is None:
+                filename = fetchPDB(p, format='emd', **kwargs)
+
+        fnames.append(filename)
+
+    return fnames
 
 def iterPDBFilenames(path=None, sort=False, unique=True, **kwargs):
     """Yield PDB filenames in *path* specified by the user or in local PDB
@@ -393,7 +456,7 @@ def iterPDBFilenames(path=None, sort=False, unique=True, **kwargs):
 
 
 def findPDBFiles(path, case=None, **kwargs):
-    """Return a dictionary that maps PDB filenames to file paths.  If *case*
+    """Returns a dictionary that maps PDB filenames to file paths.  If *case*
     is specified (``'u[pper]'`` or ``'l[ower]'``), dictionary keys (filenames)
     will be modified accordingly.  If a PDB filename has :file:`pdb` prefix,
     it will be trimmed, for example ``'1mkp'`` will be mapped to file path

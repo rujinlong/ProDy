@@ -371,12 +371,12 @@ at least an atom within 4 A of any water molecule.
    p.select('same residue as exwithin 4 of water')
 
 Additionally, a selection may be expanded to the immediately bonded atoms using
-``bonded [n] to ...`` setting, e.f. ``bonded 1 to calpha`` will select atoms
+``bonded [n] to ...`` setting, e.g. ``bonded 1 to calpha`` will select atoms
 bonded to Cα atoms.  For this setting to work, bonds must be set by the user
-using the :meth:`.AtomGroup.setBonds` method.  It is also possible to select
-bonded atoms by excluding the originating atoms using ``exbonded [n] to ...``
-setting.  Number ``'[n]'`` indicates number of bonds to consider from the
-originating selection and defaults to 1.
+using the :meth:`.AtomGroup.setBonds` or :meth:`.AtomGroup.inferBonds` method.  
+It is also possible to select bonded atoms by excluding the originating atoms 
+using ``exbonded [n] to ...`` setting.  Number ``'[n]'`` indicates number of 
+bonds to consider from the originating selection.
 
 
 Selection macros
@@ -441,19 +441,23 @@ all alphanumeric characters."""
 
 import sys
 from re import compile as re_compile
+try:
+   # for python>=3.3
+   from collections.abc import Iterable
+except ImportError:
+   # for python<3.3
+   from collections import Iterable
 
 import numpy as np
 from numpy import array, ndarray, ones, zeros, arange
 from numpy import invert, unique, concatenate, all, any
 from numpy import logical_and, logical_or, floor, ceil, where
 
+import pyparsing as pp
 try:
-    from . import pyparsing as pp
-    from .pyparsing import ParseException
+    from pyparsing import operatorPrecedence as operatorPrecedence
 except ImportError:
-    import pyparsing as pp
-    from pyparsing import ParseException
-
+    from pyparsing import infixNotation as operatorPrecedence
 
 from prody import LOGGER, SETTINGS, PY2K
 
@@ -462,7 +466,8 @@ from .fields import ATOMIC_FIELDS
 from .flags import PLANTERS as FLAG_PLANTERS
 
 from .atomgroup import AtomGroup
-from .chain import Chain, getSequence, AAMAP
+from .chain import Chain, getSequence
+from .atomic import AAMAP
 from .pointer import AtomPointer
 from .selection import Selection
 from .segment import Segment
@@ -498,7 +503,7 @@ MACROS_REGEX = None
 
 
 def isSelectionMacro(word):
-    """Return **True** if *word* is a user defined selection macro."""
+    """Returns **True** if *word* is a user defined selection macro."""
 
     try:
         return word in MACROS
@@ -557,7 +562,7 @@ def delSelectionMacro(name):
 
 
 def getSelectionMacro(name=None):
-    """Return the definition of the macro *name*.  If *name* is not given,
+    """Returns the definition of the macro *name*.  If *name* is not given,
     returns a copy of the selection macros dictionary."""
 
     if name is None:
@@ -723,7 +728,7 @@ def specialCharsParseAction(sel, loc, token):
     if ':' in token or 'to' in token:
         try:
             token = PP_NRANGE.parseString(token)[0]
-        except ParseException:
+        except pp.ParseException:
             pass
     return token
 
@@ -775,10 +780,15 @@ def rangeParseAction(sel, loc, tokens):
 
     if start > stop:
         raise SelectionError(sel, loc, 'range start value ({0}) is greater '
-                             'than and stop value ({1})'
+                             'than stop value ({1})'
                              .format(repr(start), repr(stop)))
     elif start == stop:
-        return first
+        if sep == ':':
+            raise SelectionError(sel, loc, 'range start value ({0}) is greater '
+                             'than or equal to stop value ({1})'
+                             .format(repr(start), repr(stop)))
+        else:
+            return first
 
     if sep == 'to':
         comp = '<='
@@ -858,7 +868,7 @@ class Select(object):
                                     'index ' + str(index), atoms.getACSIndex())
 
     def select(self, atoms, selstr, **kwargs):
-        """Return a :class:`.Selection` of atoms matching *selstr*, or
+        """Returns a :class:`.Selection` of atoms matching *selstr*, or
         **None**, if selection string does not match any atoms.
 
         :arg atoms: atoms to be evaluated
@@ -918,7 +928,7 @@ class Select(object):
                title='Selection {0} from '.format(repr(selstr)) + str(atoms))
 
     def getIndices(self, atoms, selstr, **kwargs):
-        """Return indices of atoms matching *selstr*.  Indices correspond to
+        """Returns indices of atoms matching *selstr*.  Indices correspond to
         the order in *atoms* argument.  If *atoms* is a subset of atoms, they
         should not be used for indexing the corresponding :class:`.AtomGroup`
         instance."""
@@ -943,7 +953,7 @@ class Select(object):
             return torf.nonzero()[0]
 
     def getBoolArray(self, atoms, selstr, **kwargs):
-        """Return a boolean array with **True** values for *atoms* matching
+        """Returns a boolean array with **True** values for *atoms* matching
         *selstr*.  The length of the boolean :class:`numpy.ndarray` will be
         equal to the length of *atoms* argument."""
 
@@ -953,7 +963,7 @@ class Select(object):
 
         self._reset()
 
-        for key in kwargs.keys():
+        for key in kwargs:
             if not key.isalnum():
                 raise TypeError('{0} is not a valid keyword argument, '
                                   'keywords must be all alpha numeric '
@@ -1026,7 +1036,7 @@ class Select(object):
         return torf
 
     def _getParser(self, selstr):
-        """Return an efficient parser that can handle *selstr*."""
+        """Returns an efficient parser that can handle *selstr*."""
 
         alnum = selstr
         alpha = selstr
@@ -1086,7 +1096,7 @@ class Select(object):
         if regexp: expr = PP_REGEXP | expr
         if nrange: expr = PP_NRANGE | expr
 
-        parser = pp.operatorPrecedence(expr, oplist)
+        parser = operatorPrecedence(expr, oplist)
         parser.setParseAction(self._default)
         parser.leaveWhitespace()
         parser.enablePackrat()
@@ -1099,7 +1109,7 @@ class Select(object):
         return [self._default(selstr, 0, selstr.split())]
 
     def _getZeros(self, subset=None):
-        """Return a bool array with zero elements."""
+        """Returns a bool array with zero elements."""
 
         if subset is None:
             return zeros(self._atoms.numAtoms(), bool)
@@ -1314,8 +1324,10 @@ class Select(object):
 
         debug(sel, loc, '_and2', tokens)
         if NUMB: return
-
-        if tokens[0] == 'and' or tokens[-1] == 'and':
+        
+        firsttoken = tokens[0] if not isinstance(tokens[0], Iterable) else list(tokens[0])
+        lasttoken = tokens[-1] if not isinstance(tokens[-1], Iterable) else list(tokens[-1])
+        if firsttoken == 'and' or lasttoken == 'and':
             return None, SelectionError(sel, loc, '{0} operator must be '
                 'surrounded with arguments'.format(repr('and')), [tokens[0]])
 
@@ -1638,7 +1650,7 @@ class Select(object):
                 torf[which] = False
 
         else:
-            n_atoms = self._ag.numAtoms()
+            n_atoms = self._atoms.numAtoms()
             torf = ones(n_atoms, bool)
             torf[which] = False
             check = torf.nonzero()[0]
@@ -1737,7 +1749,7 @@ class Select(object):
         return torf, False
 
     def _getNumeric(self, sel, loc, arg, copy=False):
-        """Return numeric data or a number."""
+        """Returns numeric data or a number."""
 
         debug(sel, loc, '_getNumeric', arg)
 
@@ -2155,7 +2167,7 @@ class Select(object):
         label = tokens.pop(0)
         sn2i = self._ag._getSN2I()
         if sn2i is None:
-            return None, SelectionError(sel, loc, 'serial numbers are not set'
+            return None, SelectionError(sel, loc, 'serial numbers are not set',
                                         ['serial'])
         torf = zeros(len(sn2i), bool)
         for token in tokens:
@@ -2264,7 +2276,7 @@ class Select(object):
                 value = float(token)
             except (TypeError, ValueError):
                 icode = token[-1]
-                value = token[:1]
+                value = token[:-1]
                 try:
                     value = int(value)
                 except:
@@ -2292,7 +2304,7 @@ class Select(object):
             if subset is None:
                 rnic = zip(resnums, icode) # PY3K: OK
             else:
-                rnic = zip(resnums, icode[subset]) # PY3K: OK
+                rnic = zip(resnums[subset], icode[subset]) # PY3K: OK
 
             if torf is None:
                 torf = array([val in wicode for val in rnic], bool)
@@ -2356,7 +2368,7 @@ class Select(object):
             return self._getZeros(subset), False
 
     def _getData(self, sel, loc, keyword):
-        """Return atomic data."""
+        """Returns atomic data."""
 
         data = self._data.get(keyword)
         if data is not None:
@@ -2402,7 +2414,7 @@ class Select(object):
         return data, False
 
     def _getCoords(self):
-        """Return coordinates of atoms."""
+        """Returns coordinates of atoms."""
 
         if self._coords is None:
             self._coords = self._atoms._getCoords()

@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
 """This module defines :class:`AtomGroup` class that stores atomic data and
-multiple coordinate sets in :class:`numpy.ndarray` instances."""
+multiple coordinate sets in :class:`~numpy.ndarray` instances."""
 
 from time import time
+from numbers import Integral
 
 import numpy as np
 
 from prody import LOGGER, PY2K
 from prody.kdtree import KDTree
-from prody.utilities import checkCoords, rangeString
+from prody.utilities import checkCoords, rangeString, getDistance
 
 from .atomic import Atomic
 from .fields import ATOMIC_FIELDS, READONLY
@@ -18,24 +19,27 @@ from .flags import ALIASES as FLAG_ALIASES
 from .flags import FIELDS as FLAG_FIELDS
 from .atom import Atom
 from .bond import Bond, evalBonds
+from .angle import Angle, evalAngles
+from .dihedral import Dihedral, evalDihedrals
+from .crossterm import Crossterm, evalCrossterms
+from .improper import Improper, evalImpropers
+from .donor import Donor, evalDonors
+from .acceptor import Acceptor, evalAcceptors
+from .nbexclusion import NBExclusion, evalNBExclusions
 from .selection import Selection
 
 from . import flags
 
 __all__ = ['AtomGroup']
 
-if PY2K: range = xrange
+if PY2K:
+    range = xrange
 
 
 def checkLabel(label):
     """Check suitability of *label* for labeling user data or flags."""
 
     label = str(label)
-    if not label:
-        raise ValueError('label cannot be empty string')
-
-    label = str(label)
-
     if not label:
         raise ValueError('label cannot be empty string')
 
@@ -64,7 +68,7 @@ class AtomGroup(Atomic):
 
     **Atomic data**
 
-    All atomic data is stored in :class:`numpy.ndarray` instances.
+    All atomic data is stored in :class:`~numpy.ndarray` instances.
 
     **Get and set methods**
 
@@ -119,9 +123,14 @@ class AtomGroup(Atomic):
     which is a copy of of active coordinate sets of *A* and *B*."""
 
     __slots__ = ['_title', '_n_atoms', '_coords', '_hv', '_sn2i',
-                 '_timestamps', '_kdtrees', '_bmap', '_bonds', '_cslabels',
-                 '_acsi', '_n_csets', '_data', '_fragments',
-                 '_flags', '_flagsts', '_subsets']
+                 '_timestamps', '_kdtrees',
+                 '_bmap', '_angmap', '_dmap', '_imap',
+                 '_domap', '_acmap', '_nbemap', '_cmap',
+                 '_bonds', '_angles', '_dihedrals', '_impropers',
+                 '_donors', '_acceptors', '_nbexclusions', '_crossterms',
+                 '_cslabels', '_acsi', '_n_csets', '_data',
+                 '_fragments', '_flags', '_flagsts', '_subsets',
+                 '_msa', '_sequenceMap']
 
     def __init__(self, title='Unnamed'):
 
@@ -134,6 +143,20 @@ class AtomGroup(Atomic):
         self._kdtrees = None
         self._bmap = None
         self._bonds = None
+        self._angmap = None
+        self._angles = None
+        self._dmap = None
+        self._dihedrals = None
+        self._imap = None
+        self._impropers = None
+        self._domap = None
+        self._donors = None
+        self._acmap = None
+        self._acceptors = None
+        self._nbemap = None
+        self._nbexclusions = None
+        self._cmap = None
+        self._crossterms = None
         self._fragments = None
 
         self._cslabels = []
@@ -145,6 +168,8 @@ class AtomGroup(Atomic):
         self._flags = None
         self._flagsts = 0
         self._subsets = None
+        self._msa = None
+        self._sequenceMap = None
 
     def __repr__(self):
 
@@ -168,13 +193,7 @@ class AtomGroup(Atomic):
 
         acsi = self._acsi
 
-        if isinstance(index, int):
-            n_atoms = self._n_atoms
-            if index >= n_atoms or index < -n_atoms:
-                raise IndexError('index out of bounds')
-            return Atom(self, index if index >= 0 else n_atoms + index, acsi)
-
-        elif isinstance(index, slice):
+        if isinstance(index, slice):
             start, stop, step = index.indices(self._n_atoms)
             start = start or 0
             index = np.arange(start, stop, step)
@@ -195,7 +214,14 @@ class AtomGroup(Atomic):
             return self.getHierView()[index]
 
         else:
-            raise TypeError('invalid index')
+            try:
+                index = int(index)
+                n_atoms = self._n_atoms
+                if index >= n_atoms or index < -n_atoms:
+                    raise IndexError('index out of bounds')
+                return Atom(self, index if index >= 0 else n_atoms + index, acsi)
+            except:
+                raise TypeError('invalid index')
 
     def __len__(self):
 
@@ -231,10 +257,43 @@ class AtomGroup(Atomic):
             that = other._data.get(key)
             if this is not None or that is not None:
                 if this is None:
-                    this = np.zeros(that.shape, that.dtype)
+                    shape = list(that.shape)
+                    shape[0] = len(self)
+                    this = np.zeros(shape, that.dtype)
                 if that is None:
-                    that = np.zeros(this.shape, this.dtype)
+                    shape = list(this.shape)
+                    shape[0] = len(other)
+                    that = np.zeros(shape, this.dtype)
                 new._data[key] = np.concatenate((this, that))
+
+        keys = []
+        if self._flags:
+            for flag in self._flags:
+                if flag not in keys: keys.append(flag)
+
+        if other._flags:
+            for flag in other._flags:
+                if flag not in keys: keys.append(flag)
+
+        for key in keys:
+            this = None
+            that = None
+            if self._flags:
+                this = self._flags.get(key)
+            if other._flags:
+                that = other._flags.get(key)
+            if this is not None or that is not None:
+                if this is None:
+                    shape = list(that.shape)
+                    shape[0] = len(self)
+                    this = np.zeros(shape, that.dtype)
+                if that is None:
+                    shape = list(this.shape)
+                    shape[0] = len(other)
+                    that = np.zeros(shape, this.dtype)
+                new._setFlags(key, np.concatenate((this, that)))
+
+        new._n_atoms = self._n_atoms + other._n_atoms
 
         if self._bonds is not None and other._bonds is not None:
             new.setBonds(np.concatenate([self._bonds,
@@ -243,6 +302,62 @@ class AtomGroup(Atomic):
             new.setBonds(self._bonds.copy())
         elif other._bonds is not None:
             new.setBonds(other._bonds + self._n_atoms)
+
+        if self._angles is not None and other._angles is not None:
+            new.setAngles(np.concatenate([self._angles,
+                                          other._angles + self._n_atoms]))
+        elif self._angles is not None:
+            new.setAngles(self._angles.copy())
+        elif other._angles is not None:
+            new.setAngles(other._angles + self._n_atoms)
+
+        if self._dihedrals is not None and other._dihedrals is not None:
+            new.setDihedrals(np.concatenate([self._dihedrals,
+                                             other._dihedrals + self._n_atoms]))
+        elif self._dihedrals is not None:
+            new.setDihedrals(self._dihedrals.copy())
+        elif other._dihedrals is not None:
+            new.setDihedrals(other._dihedrals + self._n_atoms)
+
+        if self._impropers is not None and other._impropers is not None:
+            new.setImpropers(np.concatenate([self._impropers,
+                                             other._impropers + self._n_atoms]))
+        elif self._impropers is not None:
+            new.setImpropers(self._impropers.copy())
+        elif other._impropers is not None:
+            new.setImpropers(other._impropers + self._n_atoms)
+
+        if self._donors is not None and other._donors is not None:
+            new.setDonors(np.concatenate([self._donors,
+                                          other._donors + self._n_atoms]))
+        elif self._donors is not None:
+            new.setDonors(self._donors.copy())
+        elif other._donors is not None:
+            new.setDonors(other._donors + self._n_atoms)
+
+        if self._acceptors is not None and other._acceptors is not None:
+            new.setAcceptors(np.concatenate([self._acceptors,
+                                             other._acceptors + self._n_atoms]))
+        elif self._acceptors is not None:
+            new.setAcceptors(self._acceptors.copy())
+        elif other._acceptors is not None:
+            new.setAcceptors(other._acceptors + self._n_atoms)
+
+        if self._nbexclusions is not None and other._nbexclusions is not None:
+            new.setNBExclusions(np.concatenate([self._nbexclusions,
+                                                other._nbexclusions + self._n_atoms]))
+        elif self._nbexclusions is not None:
+            new.setNBExclusions(self._nbexclusions.copy())
+        elif other._nbexclusions is not None:
+            new.setNBExclusions(other._nbexclusions + self._n_atoms)
+
+        if self._crossterms is not None and other._crossterms is not None:
+            new.setCrossterms(np.concatenate([self._crossterms,
+                                              other._crossterms + self._n_atoms]))
+        elif self._crossterms is not None:
+            new.setCrossterms(self._crossterms.copy())
+        elif other._crossterms is not None:
+            new.setCrossterms(other._crossterms + self._n_atoms)
 
         return new
 
@@ -270,7 +385,6 @@ class AtomGroup(Atomic):
                 all(np.all(self._data[key] == other._data[key])
                     for key in self._data))
 
-
     def __iter__(self):
         """Yield atom instances."""
 
@@ -287,7 +401,7 @@ class AtomGroup(Atomic):
          self._data.pop(nm,  None) for nm in attrs]
 
     def _getTimeStamp(self, index):
-        """Return time stamp showing when coordinates were last changed."""
+        """Returns time stamp showing when coordinates were last changed."""
 
         if self._n_cset:
             if index is None:
@@ -311,7 +425,7 @@ class AtomGroup(Atomic):
             self._kdtrees[index] = None
 
     def _getKDTree(self, index=None):
-        """Return KDTree for coordinate set at given index."""
+        """Returns KDTree for coordinate set at given index."""
 
         if self._n_csets:
             if index is None:
@@ -325,7 +439,7 @@ class AtomGroup(Atomic):
             return None
 
     def _getSN2I(self):
-        """Return a mapping of serial numbers to indices."""
+        """Returns a mapping of serial numbers to indices."""
 
         if self._sn2i is None and 'serial' in self._data:
             serials = self._data['serial']
@@ -343,7 +457,7 @@ class AtomGroup(Atomic):
         return self._sn2i
 
     def getTitle(self):
-        """Return title of the instance."""
+        """Returns title of the instance."""
 
         return self._title
 
@@ -353,18 +467,18 @@ class AtomGroup(Atomic):
         self._title = str(title)
 
     def numAtoms(self, flag=None):
-        """Return number of atoms, or number of atoms with given *flag*."""
+        """Returns number of atoms, or number of atoms with given *flag*."""
 
         return len(self._getSubset(flag)) if flag else self._n_atoms
 
     def getCoords(self):
-        """Return a copy of coordinates from active coordinate set."""
+        """Returns a copy of coordinates from active coordinate set."""
 
         if self._coords is not None:
             return self._coords[self._acsi].copy()
 
     def _getCoords(self):
-        """Return a view of coordinates from active coordinate set."""
+        """Returns a view of coordinates from active coordinate set."""
 
         if self._coords is not None:
             return self._coords[self._acsi]
@@ -405,7 +519,7 @@ class AtomGroup(Atomic):
     def _setCoords(self, coords, label='', overwrite=False):
         """Set coordinates without data type checking.  *coords* must
         be a :class:`~numpy.ndarray`, but may have data type other than
-        :class:`numpy.float64`, e.g. :class:`numpy.float32`.  *label*
+        :class:`~numpy.float64`, e.g. :class:`~numpy.float32`.  *label*
         argument may be used to label coordinate sets.  *label* may be
         a string or a list of strings length equal to the number of
         coordinate sets."""
@@ -428,7 +542,6 @@ class AtomGroup(Atomic):
             else:
                 self._coords = coords
                 self._n_csets = n_csets = shape[0]
-
 
                 if isinstance(label, list):
                     if len(label) == n_csets:
@@ -525,7 +638,7 @@ class AtomGroup(Atomic):
         self._timestamps = self._timestamps[which]
 
     def getCoordsets(self, indices=None):
-        """Return a copy of coordinate set(s) at given *indices*.  *indices*
+        """Returns a copy of coordinate set(s) at given *indices*.  *indices*
         may  be an integer, a list of integers, or **None** meaning all
         coordinate sets."""
 
@@ -533,7 +646,7 @@ class AtomGroup(Atomic):
             return None
         if indices is None:
             return self._coords.copy()
-        if isinstance(indices, (int, slice)):
+        if isinstance(indices, (Integral, slice)):
             return self._coords[indices].copy()
 
         # following fancy indexing makes a copy, so .copy() is not needed
@@ -543,7 +656,7 @@ class AtomGroup(Atomic):
                          'integers, a slice, or None')
 
     def _getCoordsets(self, indices=None):
-        """Return a view of coordinate set(s) at given *indices*."""
+        """Returns a view of coordinate set(s) at given *indices*."""
 
         if self._coords is None:
             return None
@@ -555,7 +668,7 @@ class AtomGroup(Atomic):
                              'integers, a slice, or None')
 
     def numBytes(self, all=False):
-        """Return number of bytes used by atomic data arrays, such as
+        """Returns number of bytes used by atomic data arrays, such as
         coordinate, flag, and attribute arrays.  If *all* is **True**,
         internal arrays for indexing hierarchical views, bonds, and
         fragments will also be included.  Note that memory usage of
@@ -573,13 +686,19 @@ class AtomGroup(Atomic):
                       for key, val in self._data.items() if val is not None)
         if self._bonds is not None:
             arrays[id(self._bonds)] = self._bonds
+        if self._angles is not None:
+            arrays[id(self._angles)] = self._angles
+        if self._dihedrals is not None:
+            arrays[id(self._dihedrals)] = self._dihedrals
+        if self._impropers is not None:
+            arrays[id(self._impropers)] = self._impropers
         if self._flags:
             arrays.update(getboth(val)
-                  for key, val in self._flags.items() if val is not None)
+                          for key, val in self._flags.items() if val is not None)
         if all:
             if self._subsets:
                 arrays.update(getboth(val)
-                      for key, val in self._subsets.items() if val is not None)
+                              for key, val in self._subsets.items() if val is not None)
             if self._fragments:
                 for val in self._fragments:
                     val = getbase(val)
@@ -588,16 +707,16 @@ class AtomGroup(Atomic):
                 arrays[id(self._bonds)] = self._bmap
             if self._hv is not None:
                 arrays.update(getboth(val) if hasattr(val, 'base') else
-                    getboth(val._indices) for val in self._hv._residues)
+                              getboth(val._indices) for val in self._hv._residues)
                 arrays.update(getboth(val) if hasattr(val, 'base') else
-                    getboth(val._indices) for val in self._hv._chains)
+                              getboth(val._indices) for val in self._hv._chains)
                 arrays.update(getboth(val) if hasattr(val, 'base') else
-                    getboth(val._indices) for val in self._hv._segments)
+                              getboth(val._indices) for val in self._hv._segments)
 
         return sum(getbase(arr).nbytes for arr in arrays.values())
 
     def numCoordsets(self):
-        """Return number of coordinate sets."""
+        """Returns number of coordinate sets."""
 
         return self._n_csets
 
@@ -616,7 +735,7 @@ class AtomGroup(Atomic):
             yield self._coords[i]
 
     def getACSIndex(self):
-        """Return index of the coordinate set."""
+        """Returns index of the coordinate set."""
 
         return self._acsi
 
@@ -626,7 +745,7 @@ class AtomGroup(Atomic):
         n_csets = self._n_csets
         if n_csets == 0:
             self._acsi = 0
-        if not isinstance(index, int):
+        if not isinstance(index, Integral):
             raise TypeError('index must be an integer')
         if n_csets <= index or n_csets < abs(index):
             raise IndexError('coordinate set index is out of range')
@@ -635,29 +754,32 @@ class AtomGroup(Atomic):
         self._acsi = index
 
     def getHierView(self, **kwargs):
-        """Return a hierarchical view of the atom group."""
+        """Returns a hierarchical view of the atom group."""
 
         if self._hv is None:
             self._hv = HierView(self, **kwargs)
+        else:
+            self._hv.update(**kwargs)
+
         return self._hv
 
     def numSegments(self):
-        """Return number of segments."""
+        """Returns number of segments."""
 
         return self.getHierView().numSegments()
 
     def numChains(self):
-        """Return number of chains."""
+        """Returns number of chains."""
 
         return self.getHierView().numChains()
 
     def numResidues(self):
-        """Return number of residues."""
+        """Returns number of residues."""
 
         return self.getHierView().numResidues()
 
     def iterSegments(self):
-        """Iterate over chains."""
+        """Iterate over segments."""
 
         return self.getHierView().iterSegments()
 
@@ -689,11 +811,15 @@ class AtomGroup(Atomic):
         else:
             label = checkLabel(label)
 
-            try:
-                ndim, dtype, shape = data.ndim, data.dtype, data.shape
-            except AttributeError:
-                data = np.array(data)
-                ndim, dtype, shape = data.ndim, data.dtype, data.shape
+            if np.isscalar(data):
+                data = [data] * self._n_atoms
+
+            if label in self._data.keys():
+                data = np.asarray(data, dtype=self._data[label].dtype)
+            else:
+                data = np.asarray(data)
+
+            ndim, dtype, shape = data.ndim, data.dtype, data.shape
 
             if ndim == 1 and dtype == bool:
                 raise TypeError('1 dimensional boolean arrays are not '
@@ -705,13 +831,13 @@ class AtomGroup(Atomic):
             self._data[label] = data
 
     def delData(self, label):
-        """Return data associated with *label* and remove from the instance.
+        """Returns data associated with *label* and remove from the instance.
         If data associated with *label* is not found, return **None**."""
 
         return self._data.pop(label, None)
 
     def getData(self, label):
-        """Return a copy of the data array associated with *label*, or **None**
+        """Returns a copy of the data array associated with *label*, or **None**
         if such data is not present."""
 
         data = self._getData(label)
@@ -719,7 +845,7 @@ class AtomGroup(Atomic):
             return data.copy()
 
     def _getData(self, label):
-        """Return data array associated with *label*, or **None** if such data
+        """Returns data array associated with *label*, or **None** if such data
         is not present."""
 
         try:
@@ -733,7 +859,7 @@ class AtomGroup(Atomic):
                 return getattr(self, '_get' + field.meth_pl)()
 
     def isDataLabel(self, label):
-        """Return **True** if data associated with *label* is present."""
+        """Returns **True** if data associated with *label* is present."""
 
         if label in self._data:
             return True
@@ -744,7 +870,7 @@ class AtomGroup(Atomic):
                 return False
 
     def getDataLabels(self, which=None):
-        """Return data labels.  For ``which='user'``, return only labels of
+        """Returns data labels.  For ``which='user'``, return only labels of
         user provided data."""
 
         if str(which).startswith('u'):  # user
@@ -756,7 +882,7 @@ class AtomGroup(Atomic):
         return labels
 
     def getDataType(self, label):
-        """Return type of the data (i.e. ``data.dtype``) associated with
+        """Returns type of the data (i.e. ``data.dtype``) associated with
         *label*, or **None** label is not used."""
 
         try:
@@ -765,12 +891,12 @@ class AtomGroup(Atomic):
             return None
 
     def isFlagLabel(self, label):
-        """Return **True** if flags associated with *label* are present."""
+        """Returns **True** if flags associated with *label* are present."""
 
         return label in FLAG_PLANTERS or label in (self._flags or {})
 
     def getFlags(self, label):
-        """Return a copy of atom flags for given *label*, or **None** when
+        """Returns a copy of atom flags for given *label*, or **None** when
         flags for *label* is not set."""
 
         flags = self._getFlags(label)
@@ -778,7 +904,7 @@ class AtomGroup(Atomic):
             return flags.copy()
 
     def _getFlags(self, label):
-        """Return atom flag values for given *label*, or **None** when
+        """Returns atom flag values for given *label*, or **None** when
         flags for *label* is not set."""
 
         if self._flags is None:
@@ -823,7 +949,7 @@ class AtomGroup(Atomic):
             self._flags[label] = flags
 
     def delFlags(self, label):
-        """Return flags associated with *label* and remove from the instance.
+        """Returns flags associated with *label* and remove from the instance.
         If flags associated with *label* is not found, return **None**."""
 
         return self._flags.pop(label, None)
@@ -835,7 +961,7 @@ class AtomGroup(Atomic):
             self._subsets[label] = indices
 
     def _getSubset(self, label):
-        """Return indices of atoms."""
+        """Returns indices of atoms."""
 
         if self._flags is None:
             self._flags = {}
@@ -856,7 +982,7 @@ class AtomGroup(Atomic):
                 return indices.copy()
 
     def getFlagLabels(self, which=None):
-        """Return flag labels.  For ``which='user'``,  return labels of user
+        """Returns flag labels.  For ``which='user'``,  return labels of user
         or parser (e.g. :term:`hetatm`) provided flags, for ``which='all'``
         return all possible :ref:`flags` labels in addition to those present
         in the instance."""
@@ -898,7 +1024,7 @@ class AtomGroup(Atomic):
         (default is 1) specifies increment.  If atoms with matching serial
         numbers are not found, **None** will be returned."""
 
-        if not isinstance(serial, int):
+        if not isinstance(serial, Integral):
             raise TypeError('serial must be an integer')
         if serial < 0:
             raise ValueError('serial must be greater than or equal to zero')
@@ -911,7 +1037,7 @@ class AtomGroup(Atomic):
                 if index != -1:
                     return Atom(self, index)
         else:
-            if not isinstance(stop, int):
+            if not isinstance(stop, Integral):
                 raise TypeError('stop must be an integer')
             if stop <= serial:
                 raise ValueError('stop must be greater than serial')
@@ -919,7 +1045,7 @@ class AtomGroup(Atomic):
             if step is None:
                 step = 1
             else:
-                if not isinstance(step, int):
+                if not isinstance(step, Integral):
                     raise TypeError('step must be an integer')
                 if step < 1:
                     raise ValueError('step must be greater than zero')
@@ -930,7 +1056,7 @@ class AtomGroup(Atomic):
                                             .format(serial, stop, step))
 
     def getACSLabel(self):
-        """Return active coordinate set label."""
+        """Returns active coordinate set label."""
 
         if self._n_csets:
             return self._cslabels[self._acsi]
@@ -945,7 +1071,7 @@ class AtomGroup(Atomic):
                 raise TypeError('label must be a string')
 
     def getCSLabels(self):
-        """Return coordinate set labels."""
+        """Returns coordinate set labels."""
 
         if self._n_csets:
             return list(self._cslabels)
@@ -973,7 +1099,15 @@ class AtomGroup(Atomic):
         index 1"``.  See :mod:`.select` module documentation for details.
         Also, a data array with number of bonds will be generated and stored
         with label *numbonds*.  This can be used in atom selections, e.g.
-        ``'numbonds 0'`` can be used to select ions in a system."""
+        ``'numbonds 0'`` can be used to select ions in a system. If *bonds* 
+        is empty or **None**, then all bonds will be removed for this 
+        :class:`.AtomGroup`. """
+
+        if bonds is None or len(bonds) == 0:
+            self._bmap = None
+            self._bonds = None
+            self._fragments = None
+            return
 
         if isinstance(bonds, list):
             bonds = np.array(bonds, int)
@@ -989,20 +1123,51 @@ class AtomGroup(Atomic):
         bonds.sort(1)
         bonds = bonds[bonds[:, 1].argsort(), ]
         bonds = bonds[bonds[:, 0].argsort(), ]
+        bonds = np.unique(bonds, axis=0)
 
         self._bmap, self._data['numbonds'] = evalBonds(bonds, n_atoms)
         self._bonds = bonds
         self._fragments = None
 
     def numBonds(self):
-        """Return number of bonds.  Use :meth:`setBonds` for setting bonds."""
+        """Returns number of bonds.  Use :meth:`setBonds` or 
+        :meth:`inferBonds` for setting bonds."""
 
         if self._bonds is not None:
             return self._bonds.shape[0]
         return 0
 
+    def getBonds(self):
+        """Returns bonds.  Use :meth:`setBonds` or 
+        :meth:`inferBonds` for setting bonds."""
+
+        if self._bonds is not None:
+            acsi = self._acsi
+            return np.array([Bond(self, bond, acsi) for bond in self._bonds])
+        return None
+
+    def inferBonds(self, max_bond=1.6, min_bond=0, set_bonds=True):
+        """Returns bonds based on distances **max_bond** and **min_bond**."""
+
+        bonds = []
+        for atom_i in self.iterAtoms():
+            sele = self.select('index > {0} and exwithin {1} of index {0}'
+                               .format(atom_i.getIndex(), max_bond))
+            if sele is not None:
+                for atom_j in sele.iterAtoms():
+                    distance = getDistance(atom_i.getCoords(),
+                                           atom_j.getCoords())
+                    if distance > min_bond:
+                        bonds.append([atom_i._index, atom_j._index])
+
+        if set_bonds:
+            self.setBonds(bonds)
+
+        acsi = self._acsi
+        return np.array([Bond(self, bond, acsi) for bond in bonds])
+
     def iterBonds(self):
-        """Yield bonds.  Use :meth:`setBonds` for setting bonds."""
+        """Yield bonds.  Use :meth:`setBonds` or `inferBonds` for setting bonds."""
 
         if self._bonds is not None:
             acsi = self._acsi
@@ -1010,15 +1175,456 @@ class AtomGroup(Atomic):
                 yield Bond(self, bond, acsi)
 
     def _iterBonds(self):
-        """Yield pairs of bonded atom indices. Use :meth:`setBonds` for setting
-        bonds."""
+        """Yield pairs of bonded atom indices. Use :meth:`setBonds` 
+        or `inferBonds` for setting bonds."""
 
         if self._bonds is not None:
             for a, b in self._bonds:
                 yield a, b
 
+    def setAngles(self, angles):
+        """Set covalent angles between atoms.  *angles* must be a list or an
+        array of triplets of indices.  All angles must be set at once.  Angle
+        information can be used to make atom selections, e.g. ``"angle to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of angles will be generated and stored
+        with label *numangles*.  This can be used in atom selections, e.g.
+        ``'numangles 0'`` can be used to select ions in a system."""
+
+        if isinstance(angles, list):
+            angles = np.array(angles, int)
+        if angles.ndim != 2:
+            raise ValueError('angles.ndim must be 2')
+        if angles.shape[1] != 3:
+            raise ValueError('angles.shape must be (n_angles, 3)')
+        if angles.min() < 0:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if angles.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        angles.sort(1)
+        angles = angles[angles[:, 2].argsort(), ]
+        angles = angles[angles[:, 1].argsort(), ]
+        angles = angles[angles[:, 0].argsort(), ]
+
+        self._angmap, self._data['numangles'] = evalAngles(angles, n_atoms)
+        self._angles = angles
+
+    def numAngles(self):
+        """Returns number of angles.  Use :meth:`setAngles` for setting angles."""
+
+        if self._angles is not None:
+            return self._angles.shape[0]
+        return 0
+
+    def getAngles(self):
+        """Returns angles.  Use :meth:`setAngles` for setting angles."""
+
+        if self._angles is not None:
+            acsi = self._acsi
+            return np.array([Angle(self, angle, acsi) for angle in self._angles])
+        return None
+
+    def iterAngles(self):
+        """Yield angles.  Use :meth:`setAngles` for setting angles."""
+
+        if self._angles is not None:
+            acsi = self._acsi
+            for angle in self._angles:
+                yield Angle(self, angle, acsi)
+
+    def _iterAngles(self):
+        """Yield triplets of angled atom indices. Use :meth:`setAngles` for setting
+        angles."""
+
+        if self._angles is not None:
+            for a, b, c in self._angles:
+                yield a, b, c
+
+    def setDihedrals(self, dihedrals):
+        """Set covalent dihedrals between atoms.  *dihedrals* must be a list or an
+        array of triplets of indices.  All dihedrals must be set at once.  Dihedral
+        information can be used to make atom selections, e.g. ``"dihedral to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of dihedrals will be generated and stored
+        with label *numdihedrals*.  This can be used in atom selections, e.g.
+        ``'numdihedrals 0'`` can be used to select ions in a system."""
+
+        if isinstance(dihedrals, list):
+            dihedrals = np.array(dihedrals, int)
+        if dihedrals.ndim != 2:
+            raise ValueError('dihedrals.ndim must be 2')
+        if dihedrals.shape[1] != 4:
+            raise ValueError('dihedrals.shape must be (n_dihedrals, 4)')
+        if dihedrals.min() < 0:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if dihedrals.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        dihedrals.sort(1)
+        dihedrals = dihedrals[dihedrals[:, 3].argsort(), ]
+        dihedrals = dihedrals[dihedrals[:, 2].argsort(), ]
+        dihedrals = dihedrals[dihedrals[:, 1].argsort(), ]
+        dihedrals = dihedrals[dihedrals[:, 0].argsort(), ]
+
+        self._dmap, self._data['numdihedrals'] = evalDihedrals(
+            dihedrals, n_atoms)
+        self._dihedrals = dihedrals
+
+    def numDihedrals(self):
+        """Returns number of dihedrals.  Use :meth:`setDihedrals` for setting dihedrals."""
+
+        if self._dihedrals is not None:
+            return self._dihedrals.shape[0]
+        return 0
+
+    def getDihedrals(self):
+        """Returns dihedrals.  Use :meth:`setDihedrals` for setting dihedrals."""
+
+        if self._dihedrals is not None:
+            acsi = self._acsi
+            return np.array([Dihedral(self, dihedral, acsi) for dihedral in self._dihedrals])
+        return None
+
+    def iterDihedrals(self):
+        """Yield dihedrals.  Use :meth:`setDihedrals` for setting dihedrals."""
+
+        if self._dihedrals is not None:
+            acsi = self._acsi
+            for dihedral in self._dihedrals:
+                yield Dihedral(self, dihedral, acsi)
+
+    def _iterDihedrals(self):
+        """Yield quadruplets of dihedraled atom indices. Use :meth:`setDihedrals` for setting
+        dihedrals."""
+
+        if self._dihedrals is not None:
+            for a, b, c, d in self._dihedrals:
+                yield a, b, c, d
+
+    def setImpropers(self, impropers):
+        """Set covalent impropers between atoms.  *impropers* must be a list or an
+        array of triplets of indices.  All impropers must be set at once.  Improper
+        information can be used to make atom selections, e.g. ``"improper to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of impropers will be generated and stored
+        with label *numimpropers*.  This can be used in atom selections, e.g.
+        ``'numimpropers 0'`` can be used to select ions in a system."""
+
+        if isinstance(impropers, list):
+            impropers = np.array(impropers, int)
+        if impropers.ndim != 2:
+            raise ValueError('impropers.ndim must be 2')
+        if impropers.shape[1] != 4:
+            raise ValueError('impropers.shape must be (n_impropers, 4)')
+        if impropers.min() < 0:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if impropers.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        impropers.sort(1)
+        impropers = impropers[impropers[:, 3].argsort(), ]
+        impropers = impropers[impropers[:, 2].argsort(), ]
+        impropers = impropers[impropers[:, 1].argsort(), ]
+        impropers = impropers[impropers[:, 0].argsort(), ]
+
+        self._imap, self._data['numimpropers'] = evalImpropers(
+            impropers, n_atoms)
+        self._impropers = impropers
+
+    def numImpropers(self):
+        """Returns number of impropers.  Use :meth:`setImpropers` for setting impropers."""
+
+        if self._impropers is not None:
+            return self._impropers.shape[0]
+        return 0
+
+    def getImpropers(self):
+        """Returns impropers.  Use :meth:`setImpropers` for setting impropers."""
+
+        if self._impropers is not None:
+            acsi = self._acsi
+            return np.array([Improper(self, improper, acsi) for improper in self._impropers])
+        return None
+
+    def iterImpropers(self):
+        """Yield impropers.  Use :meth:`setImpropers` for setting impropers."""
+
+        if self._impropers is not None:
+            acsi = self._acsi
+            for improper in self._impropers:
+                yield Improper(self, improper, acsi)
+
+    def _iterImpropers(self):
+        """Yield quadruplets of impropered atom indices. Use :meth:`setImpropers` for setting
+        impropers."""
+
+        if self._impropers is not None:
+            for a, b, c, d in self._impropers:
+                yield a, b, c, d
+
+    def setDonors(self, donors):
+        """Set covalent donors between atoms.  *donors* must be a list or an
+        array of pairs of indices.  All donors must be set at once.  Donoring
+        information can be used to make atom selections, e.g. ``"donored to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of donors will be generated and stored
+        with label *numdonors*.  This can be used in atom selections, e.g.
+        ``'numdonors 0'`` can be used to select ions in a system. If *donors* 
+        is empty or **None**, then all donors will be removed for this 
+        :class:`.AtomGroup`. """
+
+        if donors is None or len(donors) == 0:
+            self._domap = None
+            self._donors = None
+            return
+
+        if isinstance(donors, list):
+            donors = np.array(donors, int)
+        if donors.ndim != 2:
+            raise ValueError('donors.ndim must be 2')
+        if donors.shape[1] != 2:
+            raise ValueError('donors.shape must be (n_donors, 2)')
+        if donors.min() < -1:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if donors.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        donors.sort(1)
+        donors = donors[donors[:, 1].argsort(), ]
+        donors = donors[donors[:, 0].argsort(), ]
+        donors = np.unique(donors, axis=0)
+
+        self._domap, self._data['numdonors'] = evalDonors(donors, n_atoms)
+        self._donors = donors
+
+    def numDonors(self):
+        """Returns number of donors.  Use :meth:`setDonors` for setting donors."""
+
+        if self._donors is not None:
+            return self._donors.shape[0]
+        return 0
+
+    def getDonors(self):
+        """Returns donors.  Use :meth:`setDonors` for setting donors."""
+
+        if self._donors is not None:
+            acsi = self._acsi
+            return np.array([Donor(self, donor, acsi) for donor in self._donors])
+        return None
+
+    def iterDonors(self):
+        """Yield donors.  Use :meth:`setDonors` for setting donors."""
+
+        if self._donors is not None:
+            acsi = self._acsi
+            for donor in self._donors:
+                yield Donor(self, donor, acsi)
+
+    def _iterDonors(self):
+        """Yield pairs of donored atom indices. Use :meth:`setDonors` for setting
+        donors."""
+
+        if self._donors is not None:
+            for a, b in self._donors:
+                yield a, b
+
+    def setAcceptors(self, acceptors):
+        """Set covalent acceptors between atoms.  *acceptors* must be a list or an
+        array of pairs of indices.  All acceptors must be set at once.  Acceptoring
+        information can be used to make atom selections, e.g. ``"acceptored to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of acceptors will be generated and stored
+        with label *numacceptors*.  This can be used in atom selections, e.g.
+        ``'numacceptors 0'`` can be used to select ions in a system. If *acceptors* 
+        is empty or **None**, then all acceptors will be removed for this 
+        :class:`.AtomGroup`. """
+
+        if acceptors is None or len(acceptors) == 0:
+            self._acmap = None
+            self._acceptors = None
+            return
+
+        if isinstance(acceptors, list):
+            acceptors = np.array(acceptors, int)
+        if acceptors.ndim != 2:
+            raise ValueError('acceptors.ndim must be 2')
+        if acceptors.shape[1] != 2:
+            raise ValueError('acceptors.shape must be (n_acceptors, 2)')
+        if acceptors.min() < -1:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if acceptors.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        acceptors.sort(1)
+        acceptors = acceptors[acceptors[:, 1].argsort(), ]
+        acceptors = acceptors[acceptors[:, 0].argsort(), ]
+        acceptors = np.unique(acceptors, axis=0)
+
+        self._acmap, self._data['numacceptors'] = evalAcceptors(acceptors, n_atoms)
+        self._acceptors = acceptors
+
+    def numAcceptors(self):
+        """Returns number of acceptors.  Use :meth:`setAcceptors` for setting acceptors."""
+
+        if self._acceptors is not None:
+            return self._acceptors.shape[0]
+        return 0
+
+    def getAcceptors(self):
+        """Returns acceptors.  Use :meth:`setAcceptors` for setting acceptors."""
+
+        if self._acceptors is not None:
+            acsi = self._acsi
+            return np.array([Acceptor(self, acceptor, acsi) for acceptor in self._acceptors])
+        return None
+
+    def iterAcceptors(self):
+        """Yield acceptors.  Use :meth:`setAcceptors` for setting acceptors."""
+
+        if self._acceptors is not None:
+            acsi = self._acsi
+            for acceptor in self._acceptors:
+                yield Acceptor(self, acceptor, acsi)
+
+    def _iterAcceptors(self):
+        """Yield pairs of acceptored atom indices. Use :meth:`setAcceptors` for setting
+        acceptors."""
+
+        if self._acceptors is not None:
+            for a, b in self._acceptors:
+                yield a, b
+
+    def setNBExclusions(self, nbexclusions):
+        """Set nbexclusions between atoms.  *nbexclusions* must be a list or an
+        array of pairs of indices.  All nbexclusions must be set at once.  Acceptoring
+        information can be used to make atom selections, e.g. ``"nbexclusioned to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of nbexclusions will be generated and stored
+        with label *numnbexclusions*.  This can be used in atom selections, e.g.
+        ``'numnbexclusions 0'`` can be used to select ions in a system. If *nbexclusions* 
+        is empty or **None**, then all nbexclusions will be removed for this 
+        :class:`.AtomGroup`. """
+
+        if nbexclusions is None or len(nbexclusions) == 0:
+            self._nbemap = None
+            self._nbexclusions = None
+            return
+
+        if isinstance(nbexclusions, list):
+            nbexclusions = np.array(nbexclusions, int)
+        if nbexclusions.ndim != 2:
+            raise ValueError('nbexclusions.ndim must be 2')
+        if nbexclusions.shape[1] != 2:
+            raise ValueError('nbexclusions.shape must be (n_nbexclusions, 2)')
+        if nbexclusions.min() < 0:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if nbexclusions.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        nbexclusions.sort(1)
+        nbexclusions = nbexclusions[nbexclusions[:, 1].argsort(), ]
+        nbexclusions = nbexclusions[nbexclusions[:, 0].argsort(), ]
+        nbexclusions = np.unique(nbexclusions, axis=0)
+
+        self._nbemap, self._data['numnbexclusions'] = evalNBExclusions(
+            nbexclusions, n_atoms)
+        self._nbexclusions = nbexclusions
+
+    def numNBExclusions(self):
+        """Returns number of nbexclusions.  Use :meth:`setNBExclusions` for setting nbexclusions."""
+
+        if self._nbexclusions is not None:
+            return self._nbexclusions.shape[0]
+        return 0
+
+    def getNBExclusions(self):
+        """Returns nbexclusions.  Use :meth:`setNBExclusions` for setting nbexclusions."""
+
+        if self._nbexclusions is not None:
+            acsi = self._acsi
+            return np.array([Acceptor(self, nbexclusion, acsi) for nbexclusion in self._nbexclusions])
+        return None
+
+    def iterNBExclusions(self):
+        """Yield nbexclusions.  Use :meth:`setNBExclusions` for setting nbexclusions."""
+
+        if self._nbexclusions is not None:
+            acsi = self._acsi
+            for nbexclusion in self._nbexclusions:
+                yield Acceptor(self, nbexclusion, acsi)
+
+    def _iterNBExclusions(self):
+        """Yield pairs of nbexclusioned atom indices. Use :meth:`setNBExclusions` for setting
+        nbexclusions."""
+
+        if self._nbexclusions is not None:
+            for a, b in self._nbexclusions:
+                yield a, b
+
+    def setCrossterms(self, crossterms):
+        """Set covalent crossterms between atoms.  *crossterms* must be a list or an
+        array of triplets of indices.  All crossterms must be set at once.  Crossterm
+        information can be used to make atom selections, e.g. ``"crossterm to
+        index 1"``.  See :mod:`.select` module documentation for details.
+        Also, a data array with number of crossterms will be generated and stored
+        with label *numcrossterms*.  This can be used in atom selections, e.g.
+        ``'numcrossterms 0'`` can be used to select ions in a system."""
+
+        if isinstance(crossterms, list):
+            crossterms = np.array(crossterms, int)
+        if crossterms.ndim != 2:
+            raise ValueError('crossterms.ndim must be 2')
+        if crossterms.shape[1] != 4:
+            raise ValueError('crossterms.shape must be (n_crossterms, 4)')
+        if crossterms.min() < 0:
+            raise ValueError('negative atom indices are not valid')
+        n_atoms = self._n_atoms
+        if crossterms.max() >= n_atoms:
+            raise ValueError('atom indices are out of range')
+        crossterms.sort(1)
+        crossterms = crossterms[crossterms[:, 3].argsort(), ]
+        crossterms = crossterms[crossterms[:, 2].argsort(), ]
+        crossterms = crossterms[crossterms[:, 1].argsort(), ]
+        crossterms = crossterms[crossterms[:, 0].argsort(), ]
+
+        self._cmap, self._data['numcrossterms'] = evalCrossterms(
+            crossterms, n_atoms)
+        self._crossterms = crossterms
+
+    def numCrossterms(self):
+        """Returns number of crossterms.  Use :meth:`setCrossterms` for setting crossterms."""
+
+        if self._crossterms is not None:
+            return self._crossterms.shape[0]
+        return 0
+
+    def getCrossterms(self):
+        """Returns crossterms.  Use :meth:`setCrossterms` for setting crossterms."""
+
+        if self._crossterms is not None:
+            acsi = self._acsi
+            return np.array([Crossterm(self, crossterm, acsi) for crossterm in self._crossterms])
+        return None
+
+    def iterCrossterms(self):
+        """Yield crossterms.  Use :meth:`setCrossterms` for setting crossterms."""
+
+        if self._crossterms is not None:
+            acsi = self._acsi
+            for crossterm in self._crossterms:
+                yield Crossterm(self, crossterm, acsi)
+
+    def _iterCrossterms(self):
+        """Yield quadruplets of crosstermed atom indices. Use :meth:`setCrossterms` for setting
+        crossterms."""
+
+        if self._crossterms is not None:
+            for a, b, c, d in self._crossterms:
+                yield a, b, c, d
+
     def numFragments(self):
-        """Return number of connected atom subsets."""
+        """Returns number of connected atom subsets."""
 
         self._fragment()
         return self._data['fragindex'].max() + 1
@@ -1041,14 +1647,13 @@ class AtomGroup(Atomic):
                     self._fragments[i] = frag
                 yield frag
 
-
     def _fragment(self):
         """Set unique fragment indices to connected atom subsets using bond
         information."""
 
         if self._bmap is None:
             raise ValueError('bonds must be set for fragment determination, '
-                             'use `setBonds`')
+                             'use `setBonds` or `inferBonds` to set them')
 
         fids = np.zeros(self._n_atoms, int)
         fdict = {}
@@ -1150,29 +1755,43 @@ for fname, field in ATOMIC_FIELDS.items():
         if array is None:
             self._data.pop(var, None)
         else:
-            if self._n_atoms == 0:
-                self._n_atoms = len(array)
-            elif len(array) != self._n_atoms:
-                raise ValueError('length of array must match number '
-                                 'of atoms')
+            if np.isscalar(array):
+                self._data[var][:] = array
+            else:
+                if self._n_atoms == 0:
+                    self._n_atoms = len(array)
+                elif len(array) != self._n_atoms:
+                    raise ValueError('length of array must match number '
+                                     'of atoms')
 
-            if isinstance(array, list):
-                array = np.array(array, dtype)
-            elif not isinstance(array, np.ndarray):
-                raise TypeError('array must be an ndarray or a list')
-            elif array.ndim != ndim:
+                if not np.isscalar(array):
+                    if var == 'chain':
+                        max_len = 0
+                        for val in array:
+                            if len(val) > max_len:
+                                max_len = len(val)
+
+                        if max_len > int(dtype[1:]):
+                            dtype = dtype[0] + str(max_len)
+
+                    array = np.asarray(array, dtype)
+                else:
+                    raise TypeError('array must be an ndarray or a list')
+
+                if array.ndim != ndim:
                     raise ValueError('array must be {0} '
                                      'dimensional'.format(ndim))
-            elif array.dtype != dtype:
-                try:
-                    array = array.astype(dtype)
-                except ValueError:
-                    raise ValueError('array cannot be assigned type '
-                                     '{0}'.format(dtype))
-            self._data[var] = array
-            if none: self._none(none)
-            if flags and self._flags:
-                self._resetFlags(var)
+                elif array.dtype != dtype:
+                    try:
+                        array = array.astype(dtype)
+                    except ValueError:
+                        raise ValueError('array cannot be assigned type '
+                                         '{0}'.format(dtype))
+                self._data[var] = array
+                if none:
+                    self._none(none)
+                if flags and self._flags:
+                    self._resetFlags(var)
 
     setData = wrapSetMethod(setData)
     setData.__name__ = setMeth

@@ -107,8 +107,8 @@ extlinks = {
     'issue': ('https://github.com/prody/ProDy/issues/%s', 'issue '),
     'pdb': ('http://www.pdb.org/pdb/explore/explore.do?structureId=%s', ''),
     'wiki': ('http://en.wikipedia.org/wiki/%s', ''),
-    'pfam': ('http://pfam.sanger.ac.uk/family/%s', ''),
-    'pfamprotein': ('http://pfam.sanger.ac.uk/protein/%s', ''),
+    'pfam': ('http://pfam.xfam.org/family/%s', ''),
+    'pfamprotein': ('http://pfam.xfam.org/protein/%s', ''),
     'uniprot': ('http://www.uniprot.org/uniprot/%s', ''),
     'pdbhet': ('http://www.pdb.org/pdb/ligand/ligandsummary.do?hetId=%s', ''),
 }
@@ -168,11 +168,14 @@ rst_epilog = u"""
 .. _NMWiz: http://csb.pitt.edu/NMWiz
 .. _VMD: http://www.ks.uiuc.edu/Research/vmd
 .. _PDB: http://www.pdb.org
+.. _pip: https://pypi.python.org/pypi/pip
 
-.. _MDAnalysis: http://code.google.com/p/mdanalysis
+.. _MDAnalysis: https://www.mdanalysis.org
+.. _MDTraj: https://www.mdtraj.org
 .. _pyparsing: http://pyparsing.wikispaces.com
 .. _Matplotlib: http://matplotlib.org
 .. _Biopython: http://biopython.org
+.. _Chimera: https://www.cgl.ucsf.edu/chimera
 
 .. _PyPI: http://pypi.python.org/pypi/ProDy
 .. _GitHub: http://github.com/prody/ProDy
@@ -181,8 +184,8 @@ rst_epilog = u"""
 .. _Python: http://www.python.org
 .. _NumPy: http://www.numpy.org
 .. _Scipy: http://www.scipy.org
-.. _pip: http://www.pip-installer.org
 .. _nose: http://nose.readthedocs.org
+.. _Pandas: https://pandas.pydata.org/
 
 
 .. |A2| replace:: Å\ :sup:`2`

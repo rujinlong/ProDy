@@ -35,7 +35,9 @@ def execDSSP(pdb, outputname=None, outputdir=None, stderr=True):
        pattern recognition of hydrogen-bonded and geometrical features.
        *Biopolymers* **1983** 22:2577-2637."""
 
-    dssp = which('dssp')
+    dssp = which('mkdssp')
+    if dssp is None:
+        dssp = which('dssp')
     if dssp is None:
         raise EnvironmentError('command not found: dssp executable is not '
                                'found in one of system paths')
@@ -73,7 +75,7 @@ def execDSSP(pdb, outputname=None, outputdir=None, stderr=True):
 
 
 def parseDSSP(dssp, ag, parseall=False):
-    """Parse DSSP data from file *dssp* into :class:`~.AtomGroup` instance
+    """Parse DSSP data from file *dssp* into :class:`.AtomGroup` instance
     *ag*.  DSSP output file must be in the new format used from July 1995
     and onwards.  When *dssp* file is parsed, following attributes are added
     to *ag*:
@@ -202,3 +204,4 @@ def performDSSP(pdb, parseall=False, stderr=True):
 
     pdb = fetchPDB(pdb, compressed=False)
     return parseDSSP(execDSSP(pdb, stderr=stderr), parsePDB(pdb), parseall)
+

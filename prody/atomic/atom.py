@@ -3,7 +3,7 @@
 
 import numpy as np
 
-from . import flags
+from .flags import PLANTERS
 from .fields import ATOMIC_FIELDS, READONLY
 from .fields import wrapGetMethod, wrapSetMethod
 from .pointer import AtomPointer
@@ -50,17 +50,17 @@ class Atom(AtomPointer):
         return self._index
 
     def numAtoms(self, flag=None):
-        """Return number of atoms, or number of atoms with given *flag*."""
+        """Returns number of atoms, or number of atoms with given *flag*."""
 
         return len(self._getSubset(flag)) if flag else 1
 
     def getIndex(self):
-        """Return index of the atom."""
+        """Returns index of the atom."""
 
         return self._index
 
     def getIndices(self):
-        """Return index of the atom in an :class:`numpy.ndarray`."""
+        """Returns index of the atom in an :class:`numpy.ndarray`."""
 
         return np.array([self._index])
 
@@ -74,14 +74,14 @@ class Atom(AtomPointer):
     __iter__ = iterAtoms
 
     def getCoords(self):
-        """Return a copy of coordinates of the atom from the active coordinate
+        """Returns a copy of coordinates of the atom from the active coordinate
         set."""
 
         if self._ag._coords is not None:
             return self._ag._coords[self.getACSIndex(), self._index].copy()
 
     def _getCoords(self):
-        """Return a view of coordinates of the atom from the active coordinate
+        """Returns a view of coordinates of the atom from the active coordinate
         set."""
 
         if self._ag._coords is not None:
@@ -95,7 +95,7 @@ class Atom(AtomPointer):
         self._ag._setTimeStamp(acsi)
 
     def getCoordsets(self, indices=None):
-        """Return a copy of coordinate set(s) at given *indices*."""
+        """Returns a copy of coordinate set(s) at given *indices*."""
 
         if self._ag._coords is None:
             return None
@@ -113,7 +113,7 @@ class Atom(AtomPointer):
                          'integers, a slice, or None')
 
     def _getCoordsets(self, indices=None):
-        """Return a view of coordinate set(s) at given *indices*."""
+        """Returns a view of coordinate set(s) at given *indices*."""
 
         if self._ag._coords is None:
             return None
@@ -135,14 +135,14 @@ class Atom(AtomPointer):
         for i in range(self.numCoordsets()):
             yield self._ag._coords[i, self._index]
 
-    def getMassess(self):
+    def getMasses(self):
         """get the mass atom. """
-        mass_dict = {'C':12,'N':14,'S':32,'O':16,'H':1}
+        from prody.utilities.misctools import getMasses
         
-        return mass_dict[self.getElement()]
+        return getMasses(self.getElement())
 
     def getData(self, label):
-        """Return a copy of data associated with *label*, if it is present."""
+        """Returns a copy of data associated with *label*, if it is present."""
 
         try:
             data = self._ag._getData(label)
@@ -173,7 +173,7 @@ class Atom(AtomPointer):
                                        ' AtomGroup first'.format(repr(label)))
 
     def getFlag(self, label):
-        """Return atom flag."""
+        """Returns atom flag."""
 
         return self._ag._getFlags(label)[self._index]
 
@@ -182,7 +182,7 @@ class Atom(AtomPointer):
 
          :raise AttributeError: when *label* is not in use or read-only"""
 
-        if label in flags.PLANTERS:
+        if label in PLANTERS:
             raise AttributeError('flag {0} cannot be changed by user'
                                     .format(repr(label)))
         flags = self._ag._getFlags(label)
@@ -192,12 +192,12 @@ class Atom(AtomPointer):
         flags[self._index] = value
 
     def getSelstr(self):
-        """Return selection string that will select this atom."""
+        """Returns selection string that will select this atom."""
 
         return 'index {0}'.format(self._index)
 
     def numBonds(self):
-        """Return number of bonds formed by this atom.  Bonds must be set first
+        """Returns number of bonds formed by this atom.  Bonds must be set first
         using :meth:`.AtomGroup.setBonds`."""
 
         numbonds = self._ag._data.get('numbonds')
@@ -239,6 +239,23 @@ class Atom(AtomPointer):
             if other == -1:
                 break
             yield Atom(ag, other, acsi)
+
+    def toTEMPyAtom(self):
+        """Returns a TEMPy BioPyAtom or Structure object as appropriate"""  
+        try:
+            from TEMPy.protein.prot_rep_biopy import Atom as TEMPyAtom
+        except ImportError:
+            raise ImportError('TEMPy is needed for this functionality')
+
+        return TEMPyAtom(
+            self.getName(), self.getCoords(),
+            'HETATM' if self.getFlag('hetatm') else 'ATOM',
+            self.getSerial(), self.getBeta(),
+            self.getAltloc(), self.getIcode(),
+            self.getCharge(), self.getElement(),
+            self.getOccupancy(), self.getResname(),
+            None, self.getACSIndex(), self.getChid(),
+            self.getResnum())
 
 
 for fname, field in ATOMIC_FIELDS.items():

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import numpy as np
 
-from . import flags
+from .flags import PLANTERS
 from .atom import Atom
 from .fields import ATOMIC_FIELDS, READONLY
 from .fields import wrapGetMethod, wrapSetMethod
@@ -32,10 +32,9 @@ class AtomSubset(AtomPointer):
 
         if not isinstance(indices, np.ndarray):
             indices = np.array(indices, int)
-        elif not indices.dtype == int:
-	    indices = list(indices[0])
-	    indices = np.array(indices, int)
-	
+        elif not np.issubdtype(indices.dtype, np.signedinteger):
+            indices = list(indices[0])
+            indices = np.array(indices, int)
 
         if kwargs.get('unique'):
             self._indices = indices
@@ -48,8 +47,15 @@ class AtomSubset(AtomPointer):
 
         return len(self._indices)
 
+    def __getitem__(self, index):
+        try:
+            index = self._indices[index]
+            return self._ag[index]
+        except:
+            raise TypeError('invalid index')
+
     def getCoords(self):
-        """Return a copy of coordinates from the active coordinate set."""
+        """Returns a copy of coordinates from the active coordinate set."""
 
         if self._ag._coords is not None:
             # Since this is not slicing, a view is not returned
@@ -65,7 +71,7 @@ class AtomSubset(AtomPointer):
             self._ag._setTimeStamp(self.getACSIndex())
 
     def getCoordsets(self, indices=None):
-        """Return coordinate set(s) at given *indices*, which may be an integer
+        """Returns coordinate set(s) at given *indices*, which may be an integer
         or a list/array of integers."""
 
         if self._ag._coords is None:
@@ -93,17 +99,17 @@ class AtomSubset(AtomPointer):
     _iterCoordsets = iterCoordsets
 
     def getIndices(self):
-        """Return a copy of the indices of atoms."""
+        """Returns a copy of the indices of atoms."""
 
         return self._indices.copy()
 
     def _getIndices(self):
-        """Return indices of atoms."""
+        """Returns indices of atoms."""
 
         return self._indices
 
     def numAtoms(self, flag=None):
-        """Return number of atoms, or number of atoms with given *flag*."""
+        """Returns number of atoms, or number of atoms with given *flag*."""
 
         return len(self._getSubset(flag)) if flag else len(self._indices)
 
@@ -118,7 +124,7 @@ class AtomSubset(AtomPointer):
     __iter__ = iterAtoms
 
     def getData(self, label):
-        """Return a copy of data associated with *label*, if it is present."""
+        """Returns a copy of data associated with *label*, if it is present."""
 
         data = self._ag._getData(label)
         if data is not None:
@@ -143,7 +149,7 @@ class AtomSubset(AtomPointer):
                                      'AtomGroup first'.format(repr(label)))
 
     def getFlags(self, label):
-        """Return a copy of atom flags for given *label*, or **None** when
+        """Returns a copy of atom flags for given *label*, or **None** when
         flags for *label* is not set."""
 
         return self._ag._getFlags(label)[self._indices]
@@ -153,7 +159,7 @@ class AtomSubset(AtomPointer):
 
          :raise AttributeError: when *label* is not in use or read-only"""
 
-        if label in flags.PLANTERS:
+        if label in PLANTERS:
             raise AttributeError('flag {0} cannot be changed by user'
                                     .format(repr(label)))
         flags = self._ag._getFlags(label)

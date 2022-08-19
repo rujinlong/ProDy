@@ -9,7 +9,7 @@ CSETS_NDIMS = set([2, 3])
 
 def checkCoords(coords, csets=False, natoms=None, dtype=(float, float32),
                 name='coords'):
-    """Return **True** if shape, dimensionality, and data type of *coords*
+    """Returns **True** if shape, dimensionality, and data type of *coords*
     array are as expected.
 
     :arg coords: coordinate array
@@ -63,7 +63,7 @@ NDIM12 = set([1, 2])
 NDIM123 = set([1, 2, 3])
 
 def checkWeights(weights, natoms, ncsets=None, dtype=float):
-    """Return *weights* if it has correct shape ([ncsets, ]natoms, 1).
+    """Returns *weights* if it has correct shape ([ncsets, ]natoms, 1).
     after its shape and data type is corrected. otherwise raise an exception.
     All items of *weights* must be greater than zero."""
 
@@ -72,16 +72,15 @@ def checkWeights(weights, natoms, ncsets=None, dtype=float):
     except AttributeError:
         raise TypeError('weights must be a numpy.ndarray instance')
 
-    if csets:
+    if ncsets:
         if ndim not in NDIM123:
             raise ValueError('weights.dim must be 1, 2, or 3')
-        if csets > 1:
-            if ndim == 3 and shape[0] != csets:
+        if ndim == 3:
+            if shape[0] != ncsets:
                 raise ValueError('weights.shape must be '
-                                   '(ncsets, natoms[, 1])')
+                                '(ncsets, natoms[, 1])')
+        if ndim < 3:
             weights = tile(weights.reshape((1, natoms, 1)), (ncsets, 1, 1))
-        elif ndim < 3:
-            weights = weights.reshape((1, natoms, 1))
     else:
         if ndim not in NDIM12:
             raise ValueError('weights.dim must be 1 or 2')
@@ -104,7 +103,7 @@ def checkWeights(weights, natoms, ncsets=None, dtype=float):
 
 
 def checkTypes(args, **types):
-    """Return **True** if types of all *args* match those given in *types*.
+    """Returns **True** if types of all *args* match those given in *types*.
 
     :raises: :exc:`TypeError` when type of an argument is not one of allowed
         types

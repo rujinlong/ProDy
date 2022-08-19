@@ -4,8 +4,8 @@
 import numpy as np
 
 from prody import LOGGER
-from prody.atomic import AtomPointer
-from prody.utilities import importLA
+from prody.atomic import AtomPointer, AtomMap
+from prody.utilities import importLA, checkWeights
 
 from .measure import calcCenter
 
@@ -38,7 +38,7 @@ class Transformation(object):
             raise ValueError('one or two array must be provided as arguments')
 
     def getRotation(self):
-        """Return rotation matrix."""
+        """Returns rotation matrix."""
 
         if self._matrix is not None:
             return self._matrix[:3, :3]
@@ -53,7 +53,7 @@ class Transformation(object):
         self._matrix[:3, :3] = rotation
 
     def getTranslation(self):
-        """Return translation vector."""
+        """Returns translation vector."""
 
         if self._matrix is not None:
             return self._matrix[:3, 3]
@@ -119,18 +119,23 @@ def calcTransformation(mobile, target, weights=None):
 
     if mob.shape[1] != 3:
         raise ValueError('reference and target must be coordinate arrays')
+    
+    if weights is None:
+        if isinstance(mobile, AtomMap):
+            LOGGER.warn('mobile is an AtomMap instance, consider assign weights=mobile.getFlags("mapped") '
+                        'if there are dummy atoms in mobile')
+
+        if isinstance(target, AtomMap):
+            LOGGER.warn('target is an AtomMap instance, consider assign weights=target.getFlags("mapped") '
+                        'if there are dummy atoms in target')
 
     if weights is not None:
-        if not isinstance(weights, np.ndarray):
-            raise TypeError('weights must be an ndarray instance')
-        elif weights.shape != (mob.shape[0], 1):
-            raise ValueError('weights must have shape (n_atoms, 1)')
+        weights = checkWeights(weights, mob.shape[0])
 
     return Transformation(*getTransformation(mob, tar, weights))
 
 
 def getTransformation(mob, tar, weights=None):
-
 
     if weights is None:
         mob_com = mob.mean(0)
@@ -147,18 +152,18 @@ def getTransformation(mob, tar, weights=None):
         tar = tar - tar_com
         matrix = np.dot((mob * weights).T, (tar * weights)) / weights_dot
 
-    U, s, Vh = linalg.svd(matrix)
+    U, _, Vh = linalg.svd(matrix)
+    d = np.sign(linalg.det(np.dot(U, Vh)))
     Id = np.array([[1, 0, 0],
                    [0, 1, 0],
-                   [0, 0, np.sign(linalg.det(matrix))]])
+                   [0, 0, d]])
     rotation = np.dot(Vh.T, np.dot(Id, U.T))
 
     return rotation, tar_com - np.dot(mob_com, rotation.T)
-    return rotation, tar_com - np.dot(mob_com, rotation)
 
 
 def applyTransformation(transformation, atoms):
-    """Return *atoms* after applying *transformation*.  If *atoms*
+    """Returns *atoms* after applying *transformation*.  If *atoms*
     is a :class:`.Atomic` instance, it will be returned after
     *transformation* is applied to its active coordinate set.  If
     *atoms* is an :class:`.AtomPointer` instance, *transformation*
@@ -168,6 +173,7 @@ def applyTransformation(transformation, atoms):
     coords = None
     ag = None
     if isinstance(atoms, np.ndarray):
+        atoms = np.atleast_2d(atoms)
         if atoms.shape[1] != 3:
             raise ValueError('atoms must be a 3-d coordinate array')
         coords = atoms
@@ -201,7 +207,7 @@ def _applyTransformation(t, coords):
 
 
 def superpose(mobile, target, weights=None):
-    """Return *mobile*, after its RMSD minimizing superposition onto *target*,
+    """Returns *mobile*, after its RMSD minimizing superposition onto *target*,
     and the transformation that minimizes the RMSD."""
 
     t = calcTransformation(mobile, target, weights)
@@ -349,10 +355,10 @@ def moveAtoms(atoms, **kwargs):
 
 
 def calcRMSD(reference, target=None, weights=None):
-    """Return root-mean-square deviation(s) (RMSD) between reference and target
+    """Returns root-mean-square deviation (RMSD) between reference and target
     coordinates.
 
-    .. ipython:: pyhton
+    .. ipython:: python
 
        ens = loadEnsemble('p38_X-ray.ens.npz')
        ens.getRMSDs()
@@ -396,13 +402,9 @@ def calcRMSD(reference, target=None, weights=None):
                          'number of atoms')
 
     if weights is not None:
-        if not isinstance(weights, np.ndarray):
-            raise TypeError('weights must be an ndarray instance')
-        elif (not ((weights.ndim == 2 and len(weights) == len(ref)) or
-                   (weights.ndim == 3 and
-                    weights.shape[:2] == target.shape[:2])) or
-              weights.shape[-1] != 1):
-            raise ValueError('weights must have shape ([n_confs,] n_atoms, 1)')
+        n_atoms = len(ref)
+        n_csets = 1 if tar.ndim == 2 else len(tar)
+        weights = checkWeights(weights, n_atoms, n_csets)
     return getRMSD(ref, tar, weights)
 
 
@@ -419,13 +421,13 @@ def getRMSD(ref, tar, weights=None):
     else:
         if tar.ndim == 2:
             return np.sqrt((((ref-tar) ** 2) * weights).sum() *
-                           (1 / weights.sum()))
+                           (1. / weights.sum()))
         else:
             rmsd = np.zeros(len(tar))
             if weights.ndim == 2:
                 for i, t in enumerate(tar):
                     rmsd[i] = (((ref-t) ** 2) * weights).sum()
-                return np.sqrt(rmsd * (1 / weights.sum()))
+                return np.sqrt(rmsd * (1. / weights.sum()))
             else:
                 for i, t in enumerate(tar):
                     rmsd[i] = (((ref-t) ** 2) * weights[i]).sum()
@@ -458,7 +460,7 @@ def printRMSD(reference, target=None, weights=None, log=True, msg=None):
 
 
 def alignCoordsets(atoms, weights=None):
-    """Return *atoms* after superposing coordinate sets onto its active
+    """Returns *atoms* after superposing coordinate sets onto its active
     coordinate set.  Transformations will be calculated for *atoms* and
     applied to its :class:`.AtomGroup`, when applicable.  Optionally,
     atomic *weights* can be passed for weighted superposition."""

@@ -1,6 +1,6 @@
 /*****************************************************************************/
 /*                                                                           */
-/*                   Tools for RTB calculations in ProDy.                    */
+/*                   Tools for bbENM calculations in ProDy.                    */
 /*                                                                           */
 /*****************************************************************************/
 /* Author: Cihan Kaya, She Zhang */
@@ -968,8 +968,3 @@ void deigsrt(double d[], double **v, int n)
 		}
 	}
 }
-
-
-
-
-

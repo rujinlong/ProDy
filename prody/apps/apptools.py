@@ -1,4 +1,4 @@
-"""This module define tools for application development."""
+"""This module defines tools for application development."""
 
 from copy import copy
 try:
@@ -83,7 +83,13 @@ class ProDyCitation(argparse.Action):
 
         print("Bakan A, Meireles LM, Bahar I "
               "ProDy: Protein Dynamics Inferred from Theory and Experiments "
-              "Bioinformatics 2011 27(11):1575-1577.")
+              "Bioinformatics 2011 27(11):1575-1577.\n"
+              "Bakan A, Dutta A, Mao W, Liu Y, Chennubhotla C, Lezon TR, Bahar I "
+              "Evol and ProDy for Bridging Protein Sequence Evolution and Structural Dynamics "
+              "Bioinformatics 2014 30(18):2681-2683.\n"
+              "Zhang S, Krieger JM, Zhang Y, Kaya C, Kaynak B, Mikulska-Ruminska K, Doruker P, Li H, Bahar I "
+              "ProDy 2.0: increased scale and scope after 10 years of protein dynamics modelling with Python "
+              "Bioinformatics 2021 30(18):2681-2683.")
         parser.exit()
 
 
@@ -113,7 +119,7 @@ class DevelApp(object):
         self._figargs = []
 
     def _getKwargs(self, arg):
-        """Return keyword arguments."""
+        """Returns keyword arguments."""
 
         kwargs = copy(self._args[arg])
         default = kwargs.get('default')
@@ -264,7 +270,7 @@ class DevelApp(object):
             for arg in self._figargs:
                 group.add_argument(*arg, **self._getKwargs(arg))
 
-            for arg in FIGARGS.keys():
+            for arg in list(FIGARGS.keys()):
                 group.add_argument(*arg, **self._getKwargs(arg))
 
         positional = [(arg[0], self._args[arg].get('nargs', None))
@@ -285,7 +291,7 @@ class DevelApp(object):
                 sys.stderr.write('An exception occurred when executing '
                  'your command.  If this is not a user error, please '
                  'report it to ProDy developers at: '
-                 'https://bitbucket.org/abakan/prody/issues\n')
+                 'https://github.com/prody/ProDy/issues\n')
                 sys.stderr.write('Error: ' + str(err) + '\n')
 
         sub.set_defaults(func=callback)

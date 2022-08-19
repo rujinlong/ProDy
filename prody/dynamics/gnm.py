@@ -11,15 +11,12 @@ from prody import LOGGER
 from prody.atomic import Atomic, AtomGroup
 from prody.proteins import parsePDB
 from prody.kdtree import KDTree
-from prody.utilities import importLA, checkCoords
+from prody.utilities import importLA, checkCoords, solveEig, ZERO
 
-from .nma import NMA
+from .nma import NMA, MaskedNMA
 from .gamma import Gamma
 
-__all__ = ['GNM', 'calcGNM']
-
-ZERO = 1e-6
-
+__all__ = ['GNM', 'MaskedGNM', 'calcGNM']
 
 class GNMBase(NMA):
 
@@ -45,32 +42,36 @@ class GNMBase(NMA):
 
     def _reset(self):
 
-        NMA._reset(self)
+        super(GNMBase, self)._reset()
         self._cutoff = None
         self._gamma = None
         self._kirchhoff = None
         self._is3d = False
 
+    def _clear(self):
+        self._trace = None
+        self._cov = None
+        
     def getCutoff(self):
-        """Return cutoff distance."""
+        """Returns cutoff distance."""
 
         return self._cutoff
 
     def getGamma(self):
-        """Return spring constant (or the gamma function or :class:`Gamma`
+        """Returns spring constant (or the gamma function or :class:`Gamma`
         instance)."""
 
         return self._gamma
 
     def getKirchhoff(self):
-        """Return a copy of the Kirchhoff matrix."""
+        """Returns a copy of the Kirchhoff matrix."""
 
         if self._kirchhoff is None:
             return None
-        return self._kirchhoff.copy()
+        return self._getKirchhoff().copy()
 
     def _getKirchhoff(self):
-        """Return the Kirchhoff matrix."""
+        """Returns the Kirchhoff matrix."""
 
         return self._kirchhoff
 
@@ -110,6 +111,9 @@ class GNM(GNMBase):
 
     .. [TH97] Haliloglu T, Bahar I, Erman B. Gaussian dynamics of folded
        proteins. *Phys. Rev. Lett.* **1997** 79:3090-3093."""
+
+    def __init__(self, name='Unknown'):
+        super(GNM, self).__init__(name)
 
     def setKirchhoff(self, kirchhoff):
         """Set Kirchhoff matrix."""
@@ -175,7 +179,8 @@ class GNM(GNMBase):
 
         n_atoms = coords.shape[0]
         start = time.time()
-        if kwargs.get('sparse', False):
+        sparse = kwargs.get('sparse', False)
+        if sparse:
             try:
                 from scipy import sparse as scipy_sparse
             except ImportError:
@@ -216,6 +221,9 @@ class GNM(GNMBase):
                     kirchhoff[i, i] = kirchhoff[i, i] + g
                     kirchhoff[j, j] = kirchhoff[j, j] + g
 
+        if sparse:
+            kirchhoff = kirchhoff.tocsr()
+
         LOGGER.debug('Kirchhoff was built in {0:.2f}s.'
                      .format(time.time()-start))
         self._kirchhoff = kirchhoff
@@ -228,81 +236,152 @@ class GNM(GNMBase):
         :func:`numpy.linalg.eigh` is used.
 
         :arg n_modes: number of non-zero eigenvalues/vectors to calculate.
-              If ``None`` is given, all modes will be calculated.
+              If **None** or ``'all'`` is given, all modes will be calculated.
         :type n_modes: int or None, default is 20
 
-        :arg zeros: If ``True``, modes with zero eigenvalues will be kept.
-        :type zeros: bool, default is ``False``
+        :arg zeros: If **True**, modes with zero eigenvalues will be kept.
+        :type zeros: bool, default is **True**
 
         :arg turbo: Use a memory intensive, but faster way to calculate modes.
-        :type turbo: bool, default is ``True``
+        :type turbo: bool, default is **True**
+
         """
 
         if self._kirchhoff is None:
             raise ValueError('Kirchhoff matrix is not built or set')
+        if str(n_modes).lower() == 'all':
+            n_modes = None
         assert n_modes is None or isinstance(n_modes, int) and n_modes > 0, \
             'n_modes must be a positive integer'
         assert isinstance(zeros, bool), 'zeros must be a boolean'
         assert isinstance(turbo, bool), 'turbo must be a boolean'
-        linalg = importLA()
-        start = time.time()
-        shift = 0
-        if linalg.__package__.startswith('scipy'):
-            if n_modes is None:
-                eigvals = None
-                n_modes = self._dof
-            else:
-                if n_modes >= self._dof:
-                    eigvals = None
-                    n_modes = self._dof
-                else:
-                    eigvals = (0, n_modes + shift)
-            if eigvals:
-                turbo = False
-            if isinstance(self._kirchhoff, np.ndarray):
-                values, vectors = linalg.eigh(self._kirchhoff, turbo=turbo,
-                                              eigvals=eigvals)
-            else:
-                try:
-                    from scipy.sparse import linalg as scipy_sparse_la
-                except ImportError:
-                    raise ImportError('failed to import scipy.sparse.linalg, '
-                                      'which is required for sparse matrix '
-                                      'decomposition')
-                try:
-                    values, vectors = (
-                        scipy_sparse_la.eigsh(self._kirchhoff,
-                                              k=n_modes + 1, which='SA'))
-                except:
-                    values, vectors = (
-                        scipy_sparse_la.eigen_symmetric(self._kirchhoff,
-                                                        k=n_modes + 1,
-                                                        which='SA'))
-        else:
-            if n_modes is not None:
-                LOGGER.info('Scipy is not found, all modes are calculated.')
-            values, vectors = linalg.eigh(self._kirchhoff)
-        n_zeros = sum(values < ZERO)
-        if n_zeros < 1:
-            LOGGER.warning('Less than 1 zero eigenvalues are calculated.')
-            shift = n_zeros - 1
-        elif n_zeros > 1:
-            LOGGER.warning('More than 1 zero eigenvalues are calculated.')
-            shift = n_zeros - 1
-        if zeros:
-            shift = -1
-        self._eigvals = values[1+shift:]
-        self._vars = 1 / self._eigvals
+        self._clear()
+        LOGGER.timeit('_gnm_calc_modes')
+        values, vectors, vars = solveEig(self._kirchhoff, n_modes=n_modes, zeros=zeros, 
+                                         turbo=turbo, expct_n_zeros=1)
+
+        self._eigvals = values
+        self._array = vectors
+        self._vars = vars
         self._trace = self._vars.sum()
-        self._array = vectors[:, 1+shift:]
         self._n_modes = len(self._eigvals)
-        LOGGER.debug('{0} modes were calculated in {1:.2f}s.'
-                     .format(self._n_modes, time.time()-start))
+        if self._n_modes > 1:
+            LOGGER.report('{0} modes were calculated in %.2fs.'
+                        .format(self._n_modes), label='_gnm_calc_modes')
+        else:
+            LOGGER.report('{0} mode was calculated in %.2fs.'
+                        .format(self._n_modes), label='_gnm_calc_modes')
+
+    def getNormDistFluct(self, coords):
+        """Normalized distance fluctuation
+        """
+            
+        model = self.getModel()
+        LOGGER.info('Number of chains: {0}, chains: {1}.'
+                     .format(len(list(set(coords.getChids()))), \
+                                 list(set(coords.getChids()))))
+
+        try:
+            #coords = coords.select('protein and name CA')
+            coords = (coords._getCoords() if hasattr(coords, '_getCoords') else
+                coords.getCoords())
+        except AttributeError:
+            try:
+                checkCoords(coords)
+            except TypeError:
+                raise TypeError('coords must be a Numpy array or an object '
+                                                'with `getCoords` method')
+        
+        if not isinstance(model, NMA):
+            LOGGER.info('Calculating new model')
+            model = GNM('prot analysis')
+            model.buildKirchhoff(coords)
+            model.calcModes() 
+            
+        LA = importLA()
+        n_atoms = model.numAtoms()
+        LOGGER.timeit('_ndf')
+    
+        from .analysis import calcCrossCorr
+        # <dRi, dRi>, <dRj, dRj> = 1
+        crossC = 2-2*calcCrossCorr(model)
+        r_ij = np.zeros((n_atoms,n_atoms,3))
+
+        for i in range(n_atoms):
+            for j in range(i+1,n_atoms):
+                r_ij[i][j] = coords[j,:] - coords[i,:]
+                r_ij[j][i] = r_ij[i][j]
+                
+        r_ij_n = LA.norm(r_ij, axis=2)
+
+        #with np.errstate(divide='ignore'):
+        r_ij_n[np.diag_indices_from(r_ij_n)] = ZERO  # div by 0
+        crossC = abs(crossC)
+        normdistfluct = np.divide(np.sqrt(crossC), r_ij_n)
+        LOGGER.report('NDF calculated in %.2lfs.', label='_ndf')
+        normdistfluct[np.diag_indices_from(normdistfluct)] = 0  # div by 0
+        return normdistfluct
+
+    def setEigens(self, vectors, values=None):
+        self._clear()
+        super(GNM, self).setEigens(vectors, values)
+
+class MaskedGNM(GNM, MaskedNMA):
+    def __init__(self, name='Unknown', mask=False, masked=True):
+        GNM.__init__(self, name)
+        MaskedNMA.__init__(self, name, mask, masked)
+
+    def calcModes(self, n_modes=20, zeros=False, turbo=True):
+        self._maskedarray = None
+        super(MaskedGNM, self).calcModes(n_modes, zeros, turbo)
+
+    def _reset(self):
+        super(MaskedGNM, self)._reset()
+        self._maskedarray = None
+
+    def setKirchhoff(self, kirchhoff):
+        """Set Kirchhoff matrix."""
+
+        if not isinstance(kirchhoff, np.ndarray):
+            raise TypeError('kirchhoff must be a Numpy array')
+        elif (not kirchhoff.ndim == 2 or
+              kirchhoff.shape[0] != kirchhoff.shape[1]):
+            raise ValueError('kirchhoff must be a square matrix')
+        elif kirchhoff.dtype != float:
+            try:
+                kirchhoff = kirchhoff.astype(float)
+            except:
+                raise ValueError('kirchhoff.dtype must be float')
+        
+        mask = self.mask
+        if not self.masked:
+            if not np.isscalar(mask):
+                if self.is3d():
+                    mask = np.repeat(mask, 3)
+                try:
+                    kirchhoff = kirchhoff[mask, :][:, mask]
+                except IndexError:
+                    raise IndexError('size mismatch between Kirchhoff (%d) and mask (%d).'
+                                     'Try set masked to False or reset mask'%(len(kirchhoff), len(mask)))
+
+        super(MaskedGNM, self).setKirchhoff(kirchhoff)
+
+    def _getKirchhoff(self):
+        """Returns the Kirchhoff matrix."""
+
+        kirchhoff = self._kirchhoff
+
+        if kirchhoff is None: return None
+
+        if not self._isOriginal():
+            kirchhoff = self._extend(kirchhoff, axis=None)
+
+        return kirchhoff
 
 
-def calcGNM(pdb, selstr='calpha', cutoff=15., gamma=1., n_modes=20,
+def calcGNM(pdb, selstr='calpha', cutoff=10, gamma=1., n_modes=20,
             zeros=False):
-    """Return a :class:`GNM` instance and atoms used for the calculations.
+    """Returns a :class:`GNM` instance and atoms used for the calculations.
     By default only alpha carbons are considered, but selection string helps
     selecting a subset of it.  *pdb* can be :class:`.Atomic` instance."""
 
@@ -321,5 +400,5 @@ def calcGNM(pdb, selstr='calpha', cutoff=15., gamma=1., n_modes=20,
     gnm = GNM(title)
     sel = ag.select(selstr)
     gnm.buildKirchhoff(sel, cutoff, gamma)
-    gnm.calcModes(n_modes)
+    gnm.calcModes(n_modes, zeros)
     return gnm, sel

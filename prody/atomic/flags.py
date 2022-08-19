@@ -68,17 +68,24 @@ NONSTANDARD = {
     'ASX': set(['acyclic', 'surface', 'polar', 'medium']),
     'GLX': set(['acyclic', 'surface', 'large', 'polar']),
     'CSO': set(['acyclic', 'neutral', 'surface', 'medium', 'polar']),
+    'CYX': set(['acyclic', 'neutral', 'buried', 'medium', 'polar']),
     'HIP': set(['cyclic', 'basic', 'surface', 'large', 'polar']),
+    'HID': set(['cyclic', 'basic', 'surface', 'large', 'polar']),
+    'HIE': set(['cyclic', 'basic', 'surface', 'large', 'polar']),
     'HSD': set(['cyclic', 'basic', 'surface', 'large', 'polar']),
     'HSE': set(['cyclic', 'basic', 'surface', 'large', 'polar']),
     'HSP': set(['cyclic', 'acidic', 'surface', 'large', 'polar']),
     'MSE': set(['acyclic', 'neutral', 'buried', 'large']),
+    'CME': set(['acyclic', 'neutral', 'buried', 'large']),
     'SEC': set(['acyclic', 'neutral', 'buried', 'polar', 'medium']),
     'SEP': set(['acyclic', 'surface', 'acidic', 'large', 'polar']),
     'TPO': set(['acyclic', 'surface', 'acidic', 'large', 'polar']),
     'PTR': set(['cyclic', 'aromatic', 'surface', 'acidic', 'large', 'polar']),
+    'PHD': set(['acyclic', 'acidic', 'surface', 'polar', 'large']),
     'XLE': set(['aliphatic', 'acyclic', 'buried', 'hydrophobic', 'large']),
     'XAA': set(),
+    'MEN': set(),
+    'CSB': set()
 }
 
 DEFAULTS = {
@@ -137,7 +144,7 @@ DEFAULTS = {
                   'TIP4']),
 
     'ion': set(['AL', 'BA', 'CA', 'CD', 'CL', 'CO', 'CS', 'CU', 'CU1', 'CUA',
-                'HG', 'IN', 'IOD', 'K', 'MG', 'MN3', 'NA', 'PB', 'PT', 'RB',
+                'HG', 'IN', 'IOD', 'K', 'MG', 'MN', 'MN3', 'NA', 'PB', 'PT', 'RB',
                 'TB', 'TL', 'WO4', 'YB', 'ZN']),
     'ion_other': set(['CAL', 'CES', 'CLA', 'POT', 'SOD', 'ZN2']),
 
@@ -505,6 +512,7 @@ Heteros
       `K`_     potassium           Yes
       `MG`_    magnesium           Yes
       `MN3`_   manganese (iii)     Yes
+      `MN`_    manganese (ii)      Yes    
       `NA`_    sodium              Yes
       `PB`_    lead (ii)           Yes
       `PT`_    platinum (ii)       Yes
@@ -658,7 +666,7 @@ Others
 Functions
 ===============================================================================
 
-Following functions can be used to customize flag definitions:
+The following functions can be used to customize flag definitions:
 
     * :func:`.flagDefinition`
     * :func:`.addNonstdAminoacid`
@@ -682,7 +690,7 @@ def updateDefinitions():
 
     global DEFINITIONS, AMINOACIDS, BACKBONE, TIMESTAMP
     DEFINITIONS = {}
-    user = SETTINGS.get('flag_definitions', {})
+    user = SETTINGS.get('flags_definitions', {})
 
     # nucleics
     nucleic = set()
@@ -1137,7 +1145,7 @@ def getNonstdProperties(resname):
 
 
 def listNonstdAAProps(resname):
-    """Return properties of non-standard amino acid *resname*.
+    """Returns properties of non-standard amino acid *resname*.
 
     .. ipython:: python
 

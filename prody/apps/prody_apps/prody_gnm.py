@@ -11,8 +11,10 @@ DEFAULTS = {}
 HELPTEXT = {}
 for key, txt, val in [
     ('model', 'index of model that will be used in the calculations', 1),
+    ('altloc', 'alternative location identifiers for residues used in the calculations', "A"),
     ('cutoff', 'cutoff distance (A)', 10.),
     ('gamma', 'spring constant', 1.),
+    ('zeros', 'calculate zero modes', False),
 
     ('outbeta', 'write beta-factors calculated from GNM modes', False),
     ('kirchhoff', 'write Kirchhoff matrix', False),
@@ -54,8 +56,10 @@ def prody_gnm(pdb, **kwargs):
     nmodes = kwargs.get('nmodes')
     selstr = kwargs.get('select')
     model = kwargs.get('model')
+    altloc = kwargs.get('altloc')
+    zeros = kwargs.get('zeros')
 
-    pdb = prody.parsePDB(pdb, model=model)
+    pdb = prody.parsePDB(pdb, model=model, altloc=altloc)
     if prefix == '_gnm':
         prefix = pdb.getTitle() + '_gnm'
 
@@ -67,13 +71,28 @@ def prody_gnm(pdb, **kwargs):
                 .format(len(select)))
 
     gnm = prody.GNM(pdb.getTitle())
-    gnm.buildKirchhoff(select, cutoff, gamma)
-    gnm.calcModes(nmodes)
+
+    nproc = kwargs.get('nproc')
+    if nproc:
+        try:
+            from threadpoolctl import threadpool_limits
+        except ImportError:
+            raise ImportError('Please install threadpoolctl to control threads')
+
+        with threadpool_limits(limits=nproc, user_api="blas"):
+            gnm.buildKirchhoff(select, cutoff, gamma)
+            gnm.calcModes(nmodes, zeros=zeros)
+    else:
+        gnm.buildKirchhoff(select, cutoff, gamma)
+        gnm.calcModes(nmodes, zeros=zeros)
 
     LOGGER.info('Writing numerical output.')
 
     if kwargs.get('outnpz'):
         prody.saveModel(gnm, join(outdir, prefix))
+
+    if kwargs.get('outscipion'):
+        prody.writeScipionModes(outdir, gnm)
 
     prody.writeNMD(join(outdir, prefix + '.nmd'), gnm, select)
 
@@ -99,7 +118,7 @@ def prody_gnm(pdb, **kwargs):
 
     if outall or kwargs.get('outbeta'):
         from prody.utilities import openFile
-        fout = openFile(prefix + '_beta.txt', 'w', folder=outdir)
+        fout = openFile(prefix + '_beta'+ext, 'w', folder=outdir)
         fout.write('{0[0]:1s} {0[1]:4s} {0[2]:4s} {0[3]:5s} {0[4]:5s}\n'
                        .format(['C', 'RES', '####', 'Exp.', 'The.']))
         for data in zip(select.getChids(), select.getResnames(),
@@ -201,7 +220,7 @@ def prody_gnm(pdb, **kwargs):
                         if len(item) == 1:
                             indices.append(int(item[0])-1)
                         elif len(item) == 2:
-                            indices.extend(range(int(item[0])-1, int(item[1])))
+                            indices.extend(list(range(int(item[0])-1, int(item[1]))))
                     except:
                         pass
                 for index in indices:
@@ -267,6 +286,12 @@ save all of the graphical output files:
 
     group.add_argument('-m', '--model', dest='model', type=int,
         metavar='INT', default=DEFAULTS['model'], help=HELPTEXT['model'])
+
+    group.add_argument('-L', '--altloc', dest='altloc', type=str,
+        metavar='INT', default=DEFAULTS['altloc'], help=HELPTEXT['altloc'])
+
+    group.add_argument('-w', '--zero-modes', dest='zeros', action='store_true',
+        default=DEFAULTS['zeros'], help=HELPTEXT['zeros'])
 
     group = addNMAOutput(subparser)
 

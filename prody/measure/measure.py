@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """This module defines a class and methods and for comparing coordinate data
 and measuring quantities."""
+from numbers import Integral, Number
 
-from numpy import ndarray, power, sqrt, array, zeros, arccos
-from numpy import sign, tile, concatenate, pi, cross, subtract, round, var
+from numpy import ndarray, power, sqrt, array, zeros, arccos, dot
+from numpy import sign, tile, concatenate, pi, cross, subtract, var
+from numpy import unique, where
 
-from prody.atomic import Atomic, Residue, Atom
-from prody.utilities import importLA, checkCoords
+from prody.atomic import Atomic, Residue, Atom, extendAtomicData
+from prody.kdtree import KDTree
+from prody.utilities import importLA, solveEig, checkCoords, getDistance, getCoords
+from prody.utilities import calcTree, findSubgroups
 from prody import LOGGER, PY2K
 
 if PY2K:
@@ -18,7 +22,9 @@ __all__ = ['buildDistMatrix', 'calcDistance',
            'calcMSF', 'calcRMSF',
            'calcDeformVector',
            'buildADPMatrix', 'calcADPAxes', 'calcADPs',
-           'pickCentral', 'pickCentralAtom', 'pickCentralConf', 'getWeights']
+           'pickCentral', 'pickCentralAtom', 'pickCentralConf', 'getWeights',
+           'calcInertiaTensor', 'calcPrincAxes', 'calcDistanceMatrix',
+           'assignBlocks']
 
 RAD2DEG = 180 / pi
 
@@ -26,7 +32,7 @@ DISTMAT_FORMATS = set(['mat', 'rcd', 'arr'])
 
 
 def buildDistMatrix(atoms1, atoms2=None, unitcell=None, format='mat'):
-    """Return distance matrix.  When *atoms2* is given, a distance matrix
+    """Returns distance matrix.  When *atoms2* is given, a distance matrix
     with shape ``(len(atoms1), len(atoms2))`` is built.  When *atoms2* is
     **None**, a symmetric matrix with shape ``(len(atoms1), len(atoms1))``
     is built.  If *unitcell* array is provided, periodic boundary conditions
@@ -61,6 +67,10 @@ def buildDistMatrix(atoms1, atoms2=None, unitcell=None, format='mat'):
                 atoms2 = atoms2._getCoords()
             except AttributeError:
                 raise TypeError('atoms2 must be Atomic instance or an array')
+
+        if atoms2.ndim == 1:
+            atoms2 = atoms2.reshape((1,3))
+
     if atoms1.shape[-1] != 3 or atoms2.shape[-1] != 3:
         raise ValueError('one and two must have shape ([M,]N,3)')
 
@@ -95,7 +105,7 @@ def buildDistMatrix(atoms1, atoms2=None, unitcell=None, format='mat'):
 
 
 def calcDistance(atoms1, atoms2, unitcell=None):
-    """Return the Euclidean distance between *atoms1* and *atoms2*.  Arguments
+    """Returns the Euclidean distance between *atoms1* and *atoms2*.  Arguments
     may be :class:`~.Atomic` instances or NumPy arrays.  Shape of numpy arrays
     must be ``([M,]N,3)``, where *M* is number of coordinate sets and *N* is
     the number of atoms.  If *unitcell* array is provided, periodic boundary
@@ -121,7 +131,7 @@ def calcDistance(atoms1, atoms2, unitcell=None):
         except AttributeError:
             raise TypeError('atoms2 must be Atomic instance or an array')
     if atoms1.shape[-1] != 3 or atoms2.shape[-1] != 3:
-        raise ValueError('one and two must have shape ([M,]N,3)')
+        raise ValueError('atoms1 and atoms2 must have shape ([M,]N,3)')
 
     if unitcell is not None:
         if not isinstance(unitcell, ndarray):
@@ -132,16 +142,8 @@ def calcDistance(atoms1, atoms2, unitcell=None):
     return getDistance(atoms1, atoms2, unitcell)
 
 
-def getDistance(coords1, coords2, unitcell=None):
-
-    diff = coords1 - coords2
-    if unitcell is not None:
-        diff = subtract(diff, round(diff/unitcell)*unitcell, diff)
-    return sqrt(power(diff, 2, diff).sum(axis=-1))
-
-
 def calcAngle(atoms1, atoms2, atoms3, radian=False):
-    """Return the angle between atoms in degrees."""
+    """Returns the angle between atoms in degrees."""
 
     if not isinstance(atoms1, Atomic):
         raise TypeError('atoms1 must be an Atomic instance')
@@ -156,8 +158,8 @@ def calcAngle(atoms1, atoms2, atoms3, radian=False):
                     atoms3._getCoords(), radian)
 
 
-def getAngle(coords1, coords2, coords3, radian):
-    """Return bond angle in degrees."""
+def getAngle(coords1, coords2, coords3, radian=False):
+    """Returns bond angle in degrees unless ``radian=True``"""
 
     v1 = coords1 - coords2
     v2 = coords3 - coords2
@@ -170,7 +172,7 @@ def getAngle(coords1, coords2, coords3, radian):
 
 
 def calcDihedral(atoms1, atoms2, atoms3, atoms4, radian=False):
-    """Return the dihedral angle between atoms in degrees."""
+    """Returns the dihedral angle between atoms in degrees."""
 
     if not isinstance(atoms1, Atomic):
         raise TypeError('atoms1 must be an Atomic instance')
@@ -189,7 +191,7 @@ def calcDihedral(atoms1, atoms2, atoms3, atoms4, radian=False):
 
 
 def getDihedral(coords1, coords2, coords3, coords4, radian=False):
-    """Return the dihedral angle in degrees."""
+    """Returns the dihedral angle in degrees unless ``radian=True``."""
 
     a1 = coords2 - coords1
     a2 = coords3 - coords2
@@ -201,14 +203,16 @@ def getDihedral(coords1, coords2, coords3, coords4, radian=False):
     v2 = v2 / (v2 * v2).sum(-1)**0.5
     porm = sign((v1 * a3).sum(-1))
     rad = arccos((v1*v2).sum(-1) / ((v1**2).sum(-1) * (v2**2).sum(-1))**0.5)
+    if not porm == 0:
+        rad = rad * porm
     if radian:
-        return porm * rad
+        return rad
     else:
-        return porm * rad * RAD2DEG
+        return rad * RAD2DEG
 
 
 def calcOmega(residue, radian=False, dist=4.1):
-    """Return ω (omega) angle of *residue* in degrees.  This function checks
+    """Returns ω (omega) angle of *residue* in degrees.  This function checks
     the distance between Cα atoms of two residues and raises an exception if
     the residues are disconnected.  Set *dist* to **None**, to avoid this."""
 
@@ -241,7 +245,7 @@ def calcOmega(residue, radian=False, dist=4.1):
 
 
 def calcPhi(residue, radian=False, dist=4.1):
-    """Return φ (phi) angle of *residue* in degrees.  This function checks
+    """Returns φ (phi) angle of *residue* in degrees.  This function checks
     the distance between Cα atoms of two residues and raises an exception if
     the residues are disconnected.  Set *dist* to **None**, to avoid this."""
 
@@ -255,7 +259,7 @@ def calcPhi(residue, radian=False, dist=4.1):
 
 
 def getPhiAtoms(residue, dist=4.1):
-    """Return the four atoms that form the φ (phi) angle of *residue*."""
+    """Returns the four atoms that form the φ (phi) angle of *residue*."""
 
     prev = residue.getPrev()
     try:
@@ -290,7 +294,7 @@ def getPhiAtoms(residue, dist=4.1):
 
 
 def calcPsi(residue, radian=False, dist=4.1):
-    """Return ψ (psi) angle of *residue* in degrees.  This function checks
+    """Returns ψ (psi) angle of *residue* in degrees.  This function checks
     the distance between Cα atoms of two residues and raises an exception if
     the residues are disconnected.  Set *dist* to **None**, to avoid this."""
 
@@ -304,7 +308,7 @@ def calcPsi(residue, radian=False, dist=4.1):
 
 
 def getPsiAtoms(residue, dist=4.1):
-    """Return the four atoms that form the φ (phi) angle of *residue*."""
+    """Returns the four atoms that form the φ (phi) angle of *residue*."""
 
     next = residue.getNext()
     try:
@@ -338,7 +342,7 @@ def getPsiAtoms(residue, dist=4.1):
 
 
 def calcCenter(atoms, weights=None):
-    """Return geometric center of *atoms*.  If *weights* is given it must
+    """Returns geometric center of *atoms*.  If *weights* is given it must
     be a flat array with length equal to number of atoms.  Mass center of
     atoms can be calculated by setting weights equal to atom masses, i.e.
     ``weights=atoms.getMasses()``."""
@@ -389,7 +393,7 @@ def getWeights(pdb):
 
 
 def pickCentral(obj, weights=None):
-    """Return :class:`.Atom` or :class:`.Conformation` that is closest to the
+    """Returns :class:`.Atom` or :class:`.Conformation` that is closest to the
     center of *obj*, which may be an :class:`.Atomic` or :class:`.Ensemble`
     instance.  See also :func:`pickCentralAtom`, and :func:`pickCentralConf`
     functions."""
@@ -408,7 +412,7 @@ def pickCentral(obj, weights=None):
 
 
 def pickCentralAtom(atoms, weights=None):
-    """Return :class:`.Atom` that is closest to the center, which is calculated
+    """Returns :class:`.Atom` that is closest to the center, which is calculated
     using :func:`calcCenter`."""
 
     try:
@@ -436,13 +440,13 @@ def pickCentralAtom(atoms, weights=None):
 
 
 def getCentral(coords, weights=None):
-    """Return index of coordinates closest to the center."""
+    """Returns index of coordinates closest to the center."""
 
     return ((coords - getCenter(coords, weights))**2).sum(1).argmin()
 
 
 def pickCentralConf(ens, weights=None):
-    """Return :class:`.Conformation` that is closest to the center of *ens*.
+    """Returns :class:`.Conformation` that is closest to the center of *ens*.
     In addition to :class:`.Ensemble` instances, :class:`.Atomic` instances
     are accepted as *ens* argument. In this case a :class:`.Selection` with
     central coordinate set as active will be returned."""
@@ -490,6 +494,7 @@ def calcGyradius(atoms, weights=None):
             raise ValueError('coords must have shape ([n_csets,]n_atoms,3)')
     if weights is not None:
         weights = weights.flatten()
+        weights = weights.reshape(weights.shape[0], 1)
         if len(weights) != coords.shape[-2]:
             raise ValueError('length of weights must match number of atoms')
         wsum = weights.sum()
@@ -501,9 +506,8 @@ def calcGyradius(atoms, weights=None):
             com = coords.mean(0)
             d2sum = ((coords - com)**2).sum()
         else:
-
-            com = (coords * weights).mean(0) / wsum
-            d2sum = (((coords - com)**2).sum(1) * weights).sum()
+            com = (coords * weights).sum(0) / wsum
+            d2sum = (((coords - com)**2) * weights).sum()
     else:
         rgyr = []
         for coords in coords:
@@ -512,9 +516,8 @@ def calcGyradius(atoms, weights=None):
                 d2sum = ((coords - com)**2).sum()
                 rgyr.append(d2sum)
             else:
-
-                com = (coords * weights).mean(0) / wsum
-                d2sum = (((coords - com)**2).sum(1) * weights).sum()
+                com = (coords * weights).sum(0) / wsum
+                d2sum = (((coords - com)**2) * weights).sum()
                 rgyr.append(d2sum)
         d2sum = array(rgyr)
     return (d2sum / wsum) ** 0.5
@@ -568,9 +571,9 @@ def calcMSF(coordsets):
             total += coords
             sqsum += coords ** 2
             ncsets += 1
-            LOGGER.update(ncsets, '_prody_calcMSF')
+            LOGGER.update(ncsets, label='_prody_calcMSF')
+        LOGGER.finish()
         msf = (sqsum/ncsets - (total/ncsets)**2).sum(1)
-        LOGGER.clear()
         coordsets.goto(nfi)
     return msf
 
@@ -578,27 +581,41 @@ calcMSF.__doc__ += _MSF_DOCSTRING
 
 
 def calcRMSF(coordsets):
-    """Return root mean square fluctuation(s) (RMSF)."""
+    """Returns root mean square fluctuation(s) (RMSF)."""
 
     return calcMSF(coordsets) ** 0.5
 
 calcRMSF.__doc__ += _MSF_DOCSTRING
 
 
-def calcDeformVector(from_atoms, to_atoms):
-    """Return deformation from *from_atoms* to *atoms_to* as a :class:`.Vector`
+def calcDeformVector(from_atoms, to_atoms, weights=None):
+    """Returns deformation from *from_atoms* to *atoms_to* as a :class:`.Vector`
     instance."""
+
+    from prody.dynamics import Vector
 
     name = '{0} => {1}'.format(repr(from_atoms), repr(to_atoms))
     if len(name) > 30:
         name = 'Deformation'
-    arr = (to_atoms.getCoords() - from_atoms.getCoords()).flatten()
-    from prody.dynamics import Vector
+    
+    from_coords = getCoords(from_atoms)
+    to_coords = getCoords(to_atoms)
+
+    arr = to_coords - from_coords
+    if weights is not None:
+        if weights.ndim > 1:
+            weights = weights.flatten()
+        if len(weights) != len(arr):
+            raise ValueError('weights must have the same length as from_atoms and to_atoms')
+        arr = (arr.T * weights).T
+    
+    arr = arr.flatten()
+    
     return Vector(arr, name)
 
 
 def calcADPAxes(atoms, **kwargs):
-    """Return a 3Nx3 array containing principal axes defining anisotropic
+    """Returns a 3Nx3 array containing principal axes defining anisotropic
     displacement parameter (ADP, or anisotropic temperature factor) ellipsoids.
 
     :arg atoms: a ProDy object for handling atomic data
@@ -626,7 +643,7 @@ def calcADPAxes(atoms, **kwargs):
     :type ratio: float
 
 
-    Keyword arguments *fract*, *ratio3*, or *ratio3* can be used to set
+    Keyword arguments *fract*, *ratio2*, or *ratio3* can be used to set
     principal axes to 0 for atoms showing relatively lower degree of
     anisotropy.
 
@@ -756,7 +773,7 @@ def calcADPs(atom):
 
 
 def buildADPMatrix(atoms):
-    """Return a 3Nx3N symmetric matrix containing anisotropic displacement
+    """Returns a 3Nx3N symmetric matrix containing anisotropic displacement
     parameters (ADPs) along the diagonal as 3x3 super elements.
 
     .. ipython:: python
@@ -787,3 +804,232 @@ def buildADPMatrix(atoms):
         element[1, 2] = element[2, 1] = anisou[5]
         adp[i*3:(i+1)*3, i*3:(i+1)*3] = element
     return adp
+
+
+def calcInertiaTensor(coords):
+    """"Calculate inertia tensor from coords"""
+    coords = getCoords(coords)
+
+    center = calcCenter(coords)
+    coords = coords - center
+    return dot(coords.transpose(), coords)
+
+
+def calcPrincAxes(coords, turbo=True):
+    """Calculate principal axes from coords"""
+    M = calcInertiaTensor(coords)
+    _, vectors, _ = solveEig(M, 3, zeros=True, turbo=turbo, reverse=True)
+    return vectors
+
+
+def calcDistanceMatrix(coords, cutoff=None):
+    """Calculate matrix of distances between coordinates within *cutoff*.
+    Other matrix entries are set to maximum of calculated distances.
+
+    :arg coords: a coordinate set or an object with :meth:`getCoords` method.
+    :type coords: :class:`~numpy.ndarray`, :class:`.Atomic`
+
+    :arg cutoff: cutoff distance for searching the KDTree.
+        Default (**None**) is to use the length of the longest coordinate axis.
+    :type cutoff: None, float
+    """
+    try:
+        coords = (coords._getCoords() if hasattr(coords, '_getCoords') else
+                coords.getCoords())
+    except AttributeError:
+        try:
+            checkCoords(coords)
+        except TypeError:
+            raise TypeError('coords must be a Numpy array or an object '
+                            'with `getCoords` method')
+
+    n_atoms = coords.shape[0]
+    dist_mat = zeros((n_atoms, n_atoms))
+
+    if cutoff is None:
+        cutoff = max(coords.max(axis=0) - coords.min(axis=0))
+
+    kdtree = KDTree(coords)
+    kdtree.search(cutoff)
+
+    dists = kdtree.getDistances()
+
+    r = 0
+    for i, j in kdtree.getIndices():
+        dist_mat[i, j] = dist_mat[j, i] = dists[r]
+        r += 1
+
+    for i in range(n_atoms):
+        for j in range(i+1, n_atoms):
+            if dist_mat[i, j] == 0.:
+                dist_mat[i, j] = dist_mat[j, i] = max(dists)
+
+    return dist_mat
+
+
+def assignBlocks(atoms, res_per_block=None, secstr=False, **kwargs):
+    """Assigns blocks to protein from *atoms*
+    using a block size of *res_per_block* or 
+    secondary structure information if *secstr* is **True**.
+
+    Returns an array of block IDs and an 
+    AtomMap corresponding to protein atoms.
+
+    :arg atoms: atoms to be assigned blocks
+    :type atoms: :class:`Atomic`
+
+    :arg res_per_block: number of residues per block
+        The last block may be smaller or larger than this.
+        Default is **None**, allowing *secstr* to be used easily instead.
+    :type res_per_block: int
+
+    :arg secstr: use secondary structure information to assign blocks.
+        Default is **False**, allowing *res_per_block* to be used easily instead.
+        Any set of strings that can be retrieved by :meth:`.getSecstr` is acceptable
+        including from PDB header, DSSP or STRIDE.
+    :type secstr: bool
+
+    :arg shortest_block: smallest number of residues to be included 
+        in a block before merging with the previous block
+        Default is **4** as smaller numbers can cause problems for distance matrices.
+    :type shortest_block: int
+
+    :arg longest_block: largest number of residues to be included 
+        in a block before splitting it in half.
+        Default is the length of the protein so it isn't triggered.
+    :type longest_block: int
+
+    :arg min_dist_cutoff: minimum distance of a residue from others beyond which 
+        it is not included in the same block as them using :meth:`.findSubgroups`.
+        Default is 20 A, which was found to work well with *res_per_block*=10.
+    :type min_dist_cutoff: Number
+    """
+
+    if not isinstance(atoms, Atomic):
+        raise TypeError("atoms should be an Atomic object")
+
+    if not atoms.ca:
+        raise ValueError("atoms should have Calpha atoms")
+
+    if not isinstance(res_per_block, Integral) and not secstr:
+        raise TypeError("res_per_block should be an integer or "
+                        "secstr should be set to true")
+
+    if secstr and res_per_block:
+        raise ValueError("Either secstr or res_per_block "
+                         "should be set, not both")
+
+    if not isinstance(secstr, bool):
+        raise TypeError('secstr should be a Boolean')
+
+    shortest_block = kwargs.get('shortest_block', 4)
+    shortest_block = kwargs.get('min_size', shortest_block)
+    if not isinstance(shortest_block, Integral):
+        raise TypeError("shortest_block should be an integer")
+
+    sel_ca = atoms.ca
+    n_res = sel_ca.numAtoms()
+
+    longest_block = kwargs.get('max_size', n_res)
+    longest_block = kwargs.get('longest_block', longest_block)
+    if not isinstance(longest_block, Integral):
+        raise TypeError("longest_block should be an integer")
+
+    try:
+        min_dist_cutoff = float(kwargs.get('min_dist_cutoff', 20))
+    except:
+        raise TypeError("min_dist_cutoff should be a number")
+
+    blocks = []
+
+    if res_per_block:
+        n_blocks = int(n_res/res_per_block)
+
+        blocks_stack = [[b] * res_per_block for b in range(n_blocks)] + [[n_blocks] * (n_res % res_per_block)]
+        for i, block in enumerate(blocks_stack):
+            if len(block) < shortest_block:
+                # join onto previous block
+                block = [blocks_stack[i-1][0] for b in block]
+
+            blocks.extend(block)    
+    else:
+        secstrs = sel_ca.getSecstrs()
+        if secstrs is None:
+            raise OSError("Please parse secstr information "
+                          "from PDB header or use DSSP or STRIDE "
+                          "to use secstr for assigning blocks")
+        
+        blocks.append(0)
+        secstr_prev = secstrs[0]
+        i = 0
+        for secstr in secstrs[1:-1]:
+            if secstr != secstr_prev:
+                secstr_prev = secstr
+                if len(where(array(blocks) == i)[0]) >= shortest_block:
+                    # long enough so next sec str is a new block
+                    i += 1
+            blocks.append(i)
+        
+        # include last residue in previous block
+        blocks.append(i)
+
+    blocks = array(blocks)
+
+    unique_blocks = unique(blocks)
+    for i in unique_blocks:
+        block = where(blocks == i)[0]
+        dist_mat = calcDistanceMatrix(sel_ca[block])
+        dist_tree = calcTree([str(n) for n in block], dist_mat)
+        subgroups = [array(list(reversed(n)), dtype=int) for n in
+                     reversed(findSubgroups(dist_tree, min_dist_cutoff))]
+
+        if len(subgroups) == 1:
+            continue
+        elif len(subgroups) == 2:
+            # move last subgroup to next block
+            blocks[subgroups[-1]] = blocks[subgroups[-1][-1] + 1]
+        elif len(subgroups) == 3:
+            # move first subgroup to previous block
+            blocks[subgroups[0]] = blocks[subgroups[0][0] - 1]
+            # move last subgroup to next block
+            blocks[subgroups[-1]] = blocks[subgroups[-1][-1] + 1]
+        else:
+            raise ValueError("Block {0} is getting too separated. "
+                             "Please increase min_dist_cutoff".format(i))
+
+    unique_blocks, lengths = unique(blocks, return_counts=True)
+    max_length = max(lengths)
+    while max_length > longest_block:
+        for i in unique_blocks:
+            len_block = len(where(blocks == i)[0])
+
+            if len_block > longest_block:
+                new_block = max(unique_blocks)+1
+                blocks[where(blocks == i)[0][len_block // 2 :]] = new_block
+
+                unique_blocks, lengths = unique(blocks, return_counts=True)
+                max_length = max(lengths)
+    
+    unique_blocks = unique(blocks)
+    for i in unique_blocks:
+        block = where(blocks == i)[0]
+        if len(block) < shortest_block:
+            block_im1 = where(blocks == i-1)[0]
+            block_ip1 = where(blocks == i+1)[0]
+
+            dist_back = calcDistance(atoms[block_im1][-1], atoms[block][0])
+            dist_fwd = calcDistance(atoms[block][-1], atoms[block_ip1][0])
+
+            if dist_back < min_dist_cutoff:
+                # join onto previous block
+                blocks[where(blocks == i)[0]] = i-1
+            elif dist_fwd < min_dist_cutoff:
+                # join onto next block
+                blocks[where(blocks == i)[0]] = i+1                
+
+    blocks, amap = extendAtomicData(blocks, sel_ca, atoms)
+
+    if amap.getHierView().numResidues() < atoms.getHierView().numResidues():
+        amap.setTitle("protein from " + amap.getTitle())
+
+    return blocks, amap

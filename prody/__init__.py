@@ -1,24 +1,32 @@
 """ProDy is a package for Protein Dynamics, Sequence, and Structure Analysis"""
 
-__version__ = '1.7'
+__version__ = '2.2.0'
 __release__ = __version__ # + '-dev' # comment out '-dev' before a release
 
 import sys
 import warnings
 
-if sys.version_info[:2] < (2, 6):
-    raise Exception('prody is compatible with Python version less than 2.6')
+if sys.version_info[:2] < (2, 7):
+    sys.stderr.write('Python 2.6 and older is not supported\n')
+    sys.exit()
+
+if sys.version_info[0] == 3:
+    if sys.version_info[1] < 4:
+        sys.stderr.write('Python 3.4 and older is not supported\n')
+        sys.exit()
 
 try:
     import numpy as np
 except ImportError:
     raise ImportError('Numpy is a required package for ProDy')
 else:
-    if tuple(map(int, np.__version__.split('.')[:2])) < (1, 4):
-        raise ImportError('Numpy v1.4 or later is required for ProDy')
+    if tuple(map(int, np.__version__.split('.')[:2])) < (1, 10):
+        raise ImportError('Numpy v1.10 or later is required for ProDy')
 
-from .utilities import PackageLogger, PackageSettings
-from .utilities import getPackagePath, joinRepr, tabulate
+try:
+    import scipy
+except ImportError:
+    raise ImportError('Scipy is a required package for ProDy')
 
 DEPRECATION_WARNINGS = False
 
@@ -35,7 +43,7 @@ def deprecate(dep, alt, ver=None, sl=3):
                   .format(dep, ver, alt), DeprecationWarning, stacklevel=sl)
 
 
-def turnonDepracationWarnings(action='always'):
+def turnonDeprecationWarnings(action='always'):
     """Turn on deprecation warnings for the current session.  By default
      (``action='always'``), deprecation warnings will be printed every time
      a function is called to help identification of multiple occurrence
@@ -43,7 +51,7 @@ def turnonDepracationWarnings(action='always'):
      is passed, warning will be issued at the first call of a function.
      The latter behavior will automatically kick in when v0.9 is released.
      Until v0.9 is released, restarting the session will turn of warnings.
-     This function must be called as ``prody.turnonDepracationWarnings``."""
+     This function must be called as ``prody.turnonDeprecationWarnings``."""
 
     global DEPRECATION_WARNINGS
     DEPRECATION_WARNINGS = True
@@ -53,12 +61,17 @@ def turnonDepracationWarnings(action='always'):
 _PY3K = PY3K = sys.version_info[0] > 2
 PY2K = not PY3K
 
-LOGGER = PackageLogger('.prody')
+__all__ = ['checkUpdates', 'confProDy', 'startLogfile', 'closeLogfile', 'plog']
+
+from . import utilities
+from .utilities import *
+from .utilities import LOGGER, PackageSettings
+from .utilities import getPackagePath, joinRepr, tabulate
+__all__.extend(utilities.__all__)
+__all__.append('utilities')
 
 SETTINGS = PackageSettings('prody', logger=LOGGER)
 SETTINGS.load()
-
-__all__ = ['checkUpdates', 'confProDy', 'startLogfile', 'closeLogfile', 'plog']
 
 from . import kdtree
 from .kdtree import *
@@ -76,6 +89,11 @@ from . import proteins
 from .proteins import *
 __all__.extend(proteins.__all__)
 __all__.append('proteins')
+
+from . import compounds
+from .compounds import *
+__all__.extend(compounds.__all__)
+__all__.append('compounds')
 
 from . import measure
 from .measure import *
@@ -107,6 +125,16 @@ from .trajectory import *
 __all__.extend(trajectory.__all__)
 __all__.append('trajectory')
 
+from . import chromatin
+from .chromatin import *
+__all__.extend(chromatin.__all__)
+__all__.append('chromatin')
+
+from . import domain_decomposition
+from .domain_decomposition import *
+__all__.extend(domain_decomposition.__all__)
+__all__.append('domain_decomposition')
+
 #from . import comd
 #from .comd import *
 #__all__.extend(comd.__all__)
@@ -119,11 +147,12 @@ __all__.append('prody')
 CONFIGURATION = {
     'backup': (False, None, None),
     'backup_ext': ('.BAK', None, None),
-    'auto_show': (True, None, None),
+    'auto_show': (False, None, None),
     'ligand_xml_save': (False, None, None),
     'typo_warnings': (True, None, None),
     'check_updates': (0, None, None),
     'auto_secondary': (False, None, None),
+    'auto_bonds': (False, None, None),
     'selection_warning': (True, None, None),
     'verbosity': ('debug', list(utilities.LOGGING_LEVELS),
                   LOGGER._setverbosity),
@@ -192,6 +221,8 @@ for _key in _keys:
     if _key not in SETTINGS:
         SETTINGS[_key] = default
 
+LOGGER._setverbosity(confProDy('verbosity'))
+
 confProDy.__doc__ += '\n\n' + tabulate(['Option'] + _keys,
                                        ['Default (acceptable values)'] + _vals
                                        ) + """
@@ -234,12 +265,13 @@ def checkUpdates():
       confProDy(check_updates=0) # do not auto check updates
       confProDy(check_updates=-1) # check at the start of every session"""
 
+    pypi_url = 'https://pypi.python.org/pypi'
     if PY3K:
         import xmlrpc.client
-        pypi = xmlrpc.client.Server('http://pypi.python.org/pypi')
+        pypi = xmlrpc.client.Server(pypi_url)
     else:
         import xmlrpclib
-        pypi = xmlrpclib.Server('http://pypi.python.org/pypi')
+        pypi = xmlrpclib.Server(pypi_url)
     releases = pypi.package_releases('ProDy')
     if releases[0] == __version__:
         LOGGER.info('You are using the latest ProDy release (v{0:s}).'

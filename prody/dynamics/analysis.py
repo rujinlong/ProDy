@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""This module defines functions for calculating atomic properties from normal
+"""This module defines functions for calculating physical properties from normal
 modes."""
 
 import time
@@ -7,10 +7,11 @@ import time
 import numpy as np
 
 from prody import LOGGER
-from prody.atomic import AtomGroup
+from prody.atomic import Atomic
 from prody.ensemble import Ensemble, Conformation
 from prody.trajectory import TrajBase
-from numpy import sqrt, arange, log, polyfit
+from prody.utilities import importLA, checkCoords, div0
+from numpy import sqrt, arange, log, polyfit, array
 
 from .nma import NMA
 from .modeset import ModeSet
@@ -18,13 +19,15 @@ from .mode import VectorBase, Mode, Vector
 from .gnm import GNMBase
 
 __all__ = ['calcCollectivity', 'calcCovariance', 'calcCrossCorr',
-           'calcFractVariance', 'calcSqFlucts', 'calcTempFactors',
-           'calcProjection', 'calcCrossProjection', 'calcPerturbResponse', 
-           'calcSpecDimension', ]
+           'calcFractVariance', 'calcSqFlucts', 'calcRMSFlucts', 'calcTempFactors',
+           'calcProjection', 'calcCrossProjection',
+           'calcSpecDimension', 'calcPairDeformationDist',
+           'calcDistFlucts', 'calcHinges', 'calcHitTime',
+           'calcAnisousFromModel', 'calcScipionScore', 'calcHemnmaScore']
+           #'calcEntropyTransfer', 'calcOverallNetEntropyTransfer']
 
-
-def calcCollectivity(mode, masses=None):
-    """Return collectivity of the mode.  This function implements collectivity
+def calcCollectivity(mode, masses=None, is3d=None):
+    """Returns collectivity of the mode.  This function implements collectivity
     as defined in equation 5 of [BR95]_.  If *masses* are provided, they will
     be incorporated in the calculation.  Otherwise, atoms are assumed to have
     uniform masses.
@@ -32,29 +35,65 @@ def calcCollectivity(mode, masses=None):
     .. [BR95] Bruschweiler R. Collective protein dynamics and nuclear
        spin relaxation. *J Chem Phys* **1995** 102:3396-3403.
 
-    :arg mode: mode or vector
-    :type mode: :class:`.Mode` or :class:`.Vector`
+    :arg mode: mode(s) or vector(s)
+    :type mode: :class:`.Mode`, :class:`.Vector`, :class:`.ModeSet`,
+        :class:`.NMA`, :class:`~numpy.ndarray`
 
     :arg masses: atomic masses
-    :type masses: :class:`numpy.ndarray`"""
+    :type masses: :class:`numpy.ndarray`
+    
+    :arg is3d: whether mode is 3d. Default is **None** which means determine 
+        the value based on ``mode.is3d()``.
+    :type is3d: bool
+    """
 
-    if not isinstance(mode, Mode):
-        raise TypeError('mode must be a Mode instance')
+    if isinstance(mode, np.ndarray):
+        V = mode
+        ndim = V.ndim
+        shape = V.shape
 
-    is3d = mode.is3d()
-    if masses is not None:
-        if len(masses) != mode.numAtoms():
-            raise ValueError('length of massesmust be equal to number of atoms')
+        if is3d is None:
+            is3d = False
+
+        if ndim == 0:
+            raise ValueError('mode cannot be an empty array')
+        elif ndim == 1:
+            V = V[:, np.newaxis]
+
+        n = shape[0]
         if is3d:
-            u2in = (mode.getArrayNx3() ** 2).sum(1) / masses
-    else:
-        if is3d:
-            u2in = (mode.getArrayNx3() ** 2).sum(1)
+            n_atoms = n // 3
         else:
-            u2in = (mode.getArrayNx3() ** 2)
-    u2in = u2in * (1 / u2in.sum() ** 0.5)
-    coll = np.exp(-(u2in * np.log(u2in)).sum()) / mode.numAtoms()
-    return coll
+            n_atoms = n
+    else:
+        V, W, is3d_, n_atoms = _getModeProperties(mode)
+        if is3d is None:
+            is3d = is3d_
+    
+    colls = []
+
+    def log0(a):
+        return log(a + np.finfo(float).eps)
+
+    for v in V.T:
+        if is3d:
+            u2in = (v ** 2)
+            u2in_Nx3 = np.reshape(u2in, (n_atoms, 3))
+            u2in = u2in_Nx3.sum(axis=1)
+        else:
+            u2in = (v ** 2)
+        if masses is not None:
+            if len(masses) != n_atoms:
+                raise ValueError('length of masses must be equal to number of atoms')
+            u2in = u2in / masses
+        u2in = u2in * (1 / u2in.sum() ** 0.5)
+        coll = np.exp(-(u2in * log0(u2in)).sum()) / n_atoms
+        colls.append(coll)
+    
+    if len(colls) == 1:
+        return coll
+    else:
+        return np.array(colls)
 
 def calcSpecDimension(mode):
 
@@ -81,7 +120,7 @@ def calcFracDimension(mode):
 
 
 def calcFractVariance(mode):
-    """Return fraction of variance explained by the *mode*.  Fraction of
+    """Returns fraction of variance explained by the *mode*.  Fraction of
     variance is the ratio of the variance along a mode to the trace of the
     covariance matrix of the model."""
 
@@ -102,8 +141,8 @@ def calcFractVariance(mode):
     return var / trace
 
 
-def calcProjection(ensemble, modes, rmsd=True):
-    """Return projection of conformational deviations onto given modes.
+def calcProjection(ensemble, modes, rmsd=True, norm=False):
+    """Returns projection of conformational deviations onto given modes.
     *ensemble* coordinates are used to calculate the deviations that are
     projected onto *modes*.  For K conformations and M modes, a (K,M)
     matrix is returned.
@@ -112,11 +151,16 @@ def calcProjection(ensemble, modes, rmsd=True):
         deviation(s) will be projected, or a deformation vector
     :type ensemble: :class:`.Ensemble`, :class:`.Conformation`,
         :class:`.Vector`, :class:`.Trajectory`
+        
     :arg modes: up to three normal modes
     :type modes: :class:`.Mode`, :class:`.ModeSet`, :class:`.NMA`
 
-    By default root-mean-square deviation (RMSD) along the normal mode is
-    calculated. To calculate the projection pass ``rmsd=True``.
+    By default, root-mean-square deviation (RMSD) along the normal mode is
+    calculated. To calculate the raw projection pass ``rmsd=False``.
+
+    By default, the projection is not normalized. If you would like it to be,
+    pass ``norm=True``.
+
     :class:`.Vector` instances are accepted as *ensemble* argument to allow
     for projecting a deformation vector onto normal modes."""
 
@@ -152,6 +196,11 @@ def calcProjection(ensemble, modes, rmsd=True):
         deviations = deviations.reshape((1, deviations.shape[0] * 3))
     else:
         deviations = deviations.reshape((1, deviations.shape[0]))
+    la = importLA()
+    if norm:
+        N = la.norm(deviations)
+        if N != 0:
+            deviations = deviations / N
     projection = np.dot(deviations, modes._getArray())
     if rmsd:
         projection = (1 / (n_atoms ** 0.5)) * projection
@@ -159,19 +208,26 @@ def calcProjection(ensemble, modes, rmsd=True):
 
 
 def calcCrossProjection(ensemble, mode1, mode2, scale=None, **kwargs):
-    """Return projection of conformational deviations onto modes from
+    """Returns projection of conformational deviations onto modes from
     different models.
 
     :arg ensemble: ensemble for which deviations will be projected
     :type ensemble: :class:`.Ensemble`
+
     :arg mode1: normal mode to project conformations onto
     :type mode1: :class:`.Mode`, :class:`.Vector`
+
     :arg mode2: normal mode to project conformations onto
     :type mode2: :class:`.Mode`, :class:`.Vector`
-    :arg scale: scale width of the projection onto mode ``x`` or ``y``,
-        best scaling factor will be calculated and printed on the console,
-        absolute value of scalar makes the with of two projection same,
-        sign of scalar makes the projections yield a positive correlation"""
+
+    :arg scale: scale width of the projection onto mode1 (``x``) or mode2(``y``),
+        an optimized scaling factor (scalar) will be calculated by default 
+        or a value of scalar can be passed.
+        
+    This function uses calcProjection and its arguments can be 
+    passed to it as keyword arguments.
+    By default, this function applies RMSD scaling and normalisation. 
+    These can be turned off with ``rmsd=False`` and ``norm=False``."""
 
     if not isinstance(ensemble, (Ensemble, Conformation, Vector, TrajBase)):
         raise TypeError('ensemble must be Ensemble, Conformation, Vector, '
@@ -192,8 +248,8 @@ def calcCrossProjection(ensemble, mode1, mode2, scale=None, **kwargs):
         scale = scale.lower()
         assert scale in ('x', 'y'), 'scale must be x or y'
 
-    xcoords = calcProjection(ensemble, mode1, kwargs.get('rmsd', True))
-    ycoords = calcProjection(ensemble, mode2, kwargs.pop('rmsd', True))
+    xcoords = calcProjection(ensemble, mode1, kwargs.get('rmsd', True), kwargs.get('norm', True))
+    ycoords = calcProjection(ensemble, mode2, kwargs.pop('rmsd', True), kwargs.pop('norm', True))
     if scale:
         scalar = kwargs.get('scalar', None)
         if scalar:
@@ -217,9 +273,50 @@ def calcCrossProjection(ensemble, mode1, mode2, scale=None, **kwargs):
 
     return xcoords, ycoords
 
+def _getModeProperties(modes):
+    V = []; W = []; is3d = None; n_atoms = 0
+    if isinstance(modes, VectorBase):
+        V = modes._getArray()
+        if isinstance(modes, Mode):
+            W = modes.getVariance()
+        else:
+            W = 1.
+        V = np.asarray([V]).T
+        W = np.asarray([[W]])
+        is3d = modes.is3d()
+        n_atoms = modes.numAtoms()
+    elif isinstance(modes, (NMA, ModeSet)):
+        V = modes._getArray()
+        W = np.diag(modes.getVariances())
+        is3d = modes.is3d()
+        n_atoms = modes.numAtoms()
+    elif isinstance(modes, list):
+        for mode in modes:
+            if not isinstance(mode, VectorBase):
+                raise TypeError('modes can be a list of VectorBase instances, '
+                                'not {0}'.format(type(mode)))
+            V.append(mode._getArray())
+            if isinstance(mode, Mode):
+                W.append(modes.getVariance())
+            else:
+                W.append(1.)
+            if is3d is None:
+                is3d = mode.is3d()
+                n_atoms = mode.numAtoms()
+            else:
+                if is3d != mode.is3d():
+                    raise ValueError('modes must be either all from ANM or GNM')
+                if n_atoms != mode.numAtoms():
+                    raise ValueError('each mode in the list must have the same number of atoms')
+        V = np.array(V).T
+        W = np.diag(W)
+    else:
+        raise TypeError('modes must be a Mode, NMA, ModeSet instance, '
+                        'or a list of Mode instances, not {0}'.format(type(modes)))
+    return V, W, is3d, n_atoms
 
 def calcSqFlucts(modes):
-    """Return sum of square-fluctuations for given set of normal *modes*.
+    """Returns sum of square-fluctuations for given set of normal *modes*.
     Square fluctuations for a single mode is obtained by multiplying the
     square of the mode array with the variance (:meth:`.Mode.getVariance`)
     along the mode.  For :class:`.PCA` and :class:`.EDA` models built using
@@ -227,33 +324,30 @@ def calcSqFlucts(modes):
     :class:`.ANM` and :class:`.GNM`, on the other hand, it is arbitrary or
     relative units."""
 
-    if not isinstance(modes, (VectorBase, NMA, ModeSet)):
-        raise TypeError('modes must be a Mode, NMA, or ModeSet instance, '
-                        'not {0}'.format(type(modes)))
-    is3d = modes.is3d()
-    if isinstance(modes, Vector):
-        if is3d:
-            return (modes._getArrayNx3()**2).sum(axis=1)
-        else:
-            return (modes._getArray() ** 2)
-    else:
-        sq_flucts = np.zeros(modes.numAtoms())
-        if isinstance(modes, VectorBase):
-            modes = [modes]
-        for mode in modes:
-            if is3d:
-                sq_flucts += ((mode._getArrayNx3()**2).sum(axis=1) *
-                              mode.getVariance())
-            else:
-                sq_flucts += (mode._getArray() ** 2) * mode.getVariance()
-        return sq_flucts
+    V = []; W = []; is3d = None; n_atoms = 0
+    V, W, is3d, n_atoms = _getModeProperties(modes)
 
+    sq_flucts = np.dot(V * V, W).sum(axis=1)
 
-def calcCrossCorr(modes, n_cpu=1):
-    """Return cross-correlations matrix.  For a 3-d model, cross-correlations
+    if is3d:
+        sq_flucts_Nx3 = np.reshape(sq_flucts, (n_atoms, 3))
+        sq_flucts = sq_flucts_Nx3.sum(axis=1)
+    return sq_flucts
+
+def calcRMSFlucts(modes):
+    """Returns root mean square fluctuation(s) (RMSF) for given set of normal *modes*.
+    This is calculated just by doing the square root of the square fluctuations """
+    sq_flucts = calcSqFlucts(modes)
+    if len(np.where(sq_flucts<0)[0]) != 0:
+        raise ValueError("Square Fluctuation should not contain negative values, please check input modes")
+
+    return sq_flucts ** 0.5
+
+def calcCrossCorr(modes, n_cpu=1, norm=True):
+    """Returns cross-correlations matrix.  For a 3-d model, cross-correlations
     matrix is an NxN matrix, where N is the number of atoms.  Each element of
     this matrix is the trace of the submatrix corresponding to a pair of atoms.
-    Covariance matrix may be calculated using all modes or a subset of modes
+    Cross-correlations matrix may be calculated using all modes or a subset of modes
     of an NMA instance.  For large systems, calculation of cross-correlations
     matrix may be time consuming.  Optionally, multiple processors may be
     employed to perform calculations by passing ``n_cpu=2`` or more."""
@@ -263,11 +357,20 @@ def calcCrossCorr(modes, n_cpu=1):
     elif n_cpu < 1:
         raise ValueError('n_cpu must be equal to or greater than 1')
 
-    if not isinstance(modes, (Mode, NMA, ModeSet)):
-        raise TypeError('modes must be a Mode, NMA, or ModeSet instance, '
-                        'not {0}'.format(type(modes)))
+    if not isinstance(modes, (Mode, Vector, NMA, ModeSet)):
+        if isinstance(modes, list):
+            try:
+                is3d = modes[0].is3d()
+            except:
+                raise TypeError('modes must be a list of Mode or Vector instances, '
+                            'not {0}'.format(type(modes)))
+        else:
+            raise TypeError('modes must be a Mode, Vector, NMA, or ModeSet instance, '
+                            'not {0}'.format(type(modes)))
+    else:
+        is3d = modes.is3d()
 
-    if modes.is3d():
+    if is3d:
         model = modes
         if isinstance(modes, (Mode, ModeSet)):
             model = modes._model
@@ -277,12 +380,22 @@ def calcCrossCorr(modes, n_cpu=1):
             else:
                 indices = modes.getIndices()
                 n_modes = len(modes)
+        elif isinstance(modes, Vector):
+                indices = [0]
+                n_modes = 1
         else:
             n_modes = len(modes)
             indices = np.arange(n_modes)
-        array = model._array
+            
+        array = model._getArray()
         n_atoms = model._n_atoms
-        variances = model._vars
+
+        if not isinstance(modes, Vector):
+            variances = model._vars
+        else:
+            array = array.reshape(-1, 1)
+            variances = np.ones(1)
+
         if n_cpu == 1:
             s = (n_modes, n_atoms, 3)
             arvar = (array[:, indices]*variances[indices]).T.reshape(s)
@@ -311,8 +424,11 @@ def calcCrossCorr(modes, n_cpu=1):
                 covariance += queue.get()
     else:
         covariance = calcCovariance(modes)
-    diag = np.power(covariance.diagonal(), 0.5)
-    return covariance / np.outer(diag, diag)
+    if norm:
+        diag = np.power(covariance.diagonal(), 0.5)
+        D = np.outer(diag, diag)
+        covariance = div0(covariance, D)
+    return covariance
 
 
 def _crossCorrelations(queue, n_atoms, array, variances, indices):
@@ -327,11 +443,24 @@ def _crossCorrelations(queue, n_atoms, array, variances, indices):
                               axes=([0, 1], [1, 0]))
     queue.put(covariance)
 
+def calcDistFlucts(modes, n_cpu=1, norm=True):
+    """Returns the matrix of distance fluctuations (i.e. an NxN matrix
+    where N is the number of residues, of MSFs in the inter-residue distances)
+    computed from the cross-correlation matrix (see Eq. 12.E.1 in [IB18]_). 
+    The arguments are the same as in :meth:`.calcCrossCorr`.
+
+    .. [IB18] Dill K, Jernigan RL, Bahar I. Protein Actions: Principles and
+       Modeling. *Garland Science* **2017**. """
+
+    cc = calcCrossCorr(modes, n_cpu=n_cpu, norm=norm)
+    cc_diag = np.diag(cc).reshape(-1,1)
+    distFluct = cc_diag.T + cc_diag -2.*cc
+    return distFluct
 
 def calcTempFactors(modes, atoms):
-    """Return temperature (β) factors calculated using *modes* from a
-    :class:`.ANM` or :class:`.GNM` instance scaled according to the
-    experimental β-factors from *atoms*."""
+    """Returns temperature (β) factors calculated using *modes* from a
+    :class:`.ANM` or :class:`.GNM` instance scaled according to the 
+    experimental B-factors from *atoms*."""
 
     model = modes.getModel()
     if not isinstance(model, GNMBase):
@@ -339,101 +468,291 @@ def calcTempFactors(modes, atoms):
     if model.numAtoms() != atoms.numAtoms():
         raise ValueError('modes and atoms must have same number of nodes')
     sqf = calcSqFlucts(modes)
-    return sqf / ((sqf**2).sum()**0.5) * (atoms.getBetas()**2).sum()**0.5
+    expBetas = atoms.getBetas()
+    # add warning message if experimental B-factors are zeros or meaningless (e.g., having same values)?
+    if expBetas.max() < 0.5 or expBetas.std() < 0.5:
+        LOGGER.warning('Experimental B-factors are quite small or meaningless. The calculated B-factors may be incorrect.')
+    return sqf * (expBetas.sum() / sqf.sum())
 
 
 def calcCovariance(modes):
-    """Return covariance matrix calculated for given *modes*."""
+    """Returns covariance matrix calculated for given *modes*.
+    This is 3Nx3N for 3-d models and NxN (equivalent to cross-correlations) 
+    for 1-d models such as GNM."""
 
-    if isinstance(modes, Mode):
-        array = modes._getArray()
-        return np.outer(array, array) * modes.getVariance()
-    elif isinstance(modes, ModeSet):
-        array = modes._getArray()
-        return np.dot(array, np.dot(np.diag(modes.getVariances()), array.T))
-    elif isinstance(modes, NMA):
+    if isinstance(modes, NMA):
         return modes.getCovariance()
     else:
-        raise TypeError('modes must be a Mode, NMA, or ModeSet instance')
+        V, W, _, _ = _getModeProperties(modes)
+        return np.dot(V, np.dot(W, V.T))
 
 
-def calcPerturbResponse(model, atoms=None, repeats=100):
-    """Return a matrix of profiles from scanning of the response of the
-    structure to random perturbations at specific atom (or node) positions.
-    The function implements the perturbation response scanning (PRS) method
-    described in [CA09]_.  Rows of the matrix are the average magnitude of the
-    responses obtained by perturbing the atom/node position at that row index,
-    i.e. ``prs_profile[i,j]`` will give the response of residue/node *j* to
-    perturbations in residue/node *i*.  PRS is performed using the covariance
-    matrix from *model*, e.t. :class:`.ANM` instance.  Each residue/node is
-    perturbed *repeats* times with a random unit force vector.  When *atoms*
-    instance is given, PRS profile for residues will be added as an attribute
-    which then can be retrieved as ``atoms.getData('prs_profile')``.  *model*
-    and *atoms* must have the same number of atoms. *atoms* must be an
-    :class:`.AtomGroup` instance.
+def calcPairDeformationDist(model, coords, ind1, ind2, kbt=1.):                                       
+    """Returns distribution of the deformations in the distance contributed by each mode 
+    for selected pair of residues *ind1* *ind2* using *model* from a :class:`.ANM`.
+    Method described in [EB08]_ equation (10) and figure (2).     
+    
+    .. [EB08] Eyal E., Bahar I. Toward a Molecular Understanding of 
+        the Anisotropic Response of Proteins to External Forces:
+        Insights from Elastic Network Models. *Biophys J* **2008** 94:3424-34355. 
+    
+    :arg model: this is an 3-dimensional :class:`NMA` instance from a :class:`.ANM`
+        calculations.
+    :type model: :class:`.ANM`  
 
+    :arg coords: a coordinate set or an object with :meth:`getCoords` method.
+        Recommended: ``coords = parsePDB('pdbfile').select('protein and name CA')``.
+    :type coords: :class:`~numpy.ndarray`.
 
-    .. [CA09] Atilgan C, Atilgan AR, Perturbation-Response Scanning
-       Reveals Ligand Entry-Exit Mechanisms of Ferric Binding Protein.
-       *PLoS Comput Biol* **2009** 5(10):e1000544.
-
-    The RPS matrix can be save as follows::
-
-      prs_matrix = calcPerturbationResponse(p38_anm)
-      writeArray('prs_matrix.txt', prs_matrix, format='%8.6f', delimiter='\t')
+    :arg ind1: first residue number.
+    :type ind1: int 
+    
+    :arg ind2: second residue number.
+    :type ind2: int 
     """
 
+    try:
+        resnum_list = coords.getResnums()
+        resnam_list = coords.getResnames()
+        coords = (coords._getCoords() if hasattr(coords, '_getCoords') else
+                coords.getCoords())
+    except AttributeError:
+        try:
+            checkCoords(coords)
+        except TypeError:
+            raise TypeError('coords must be a Numpy array or an object '
+                            'with `getCoords` method')
+    
     if not isinstance(model, NMA):
-        raise TypeError('model must be an NMA instance')
+        raise TypeError('model must be a NMA instance')
     elif not model.is3d():
         raise TypeError('model must be a 3-dimensional NMA instance')
     elif len(model) == 0:
         raise ValueError('model must have normal modes calculated')
-    if atoms is not None:
-        if not isinstance(atoms, AtomGroup):
-            raise TypeError('atoms must be an AtomGroup instance')
-        elif atoms.numAtoms() != model.numAtoms():
-            raise ValueError('model and atoms must have the same number atoms')
-
-    assert isinstance(repeats, int), 'repeats must be an integer'
-    cov = calcCovariance(model)
-    if cov is None:
-        raise ValueError('model did not return a covariance matrix')
-
+    
+    linalg = importLA()
     n_atoms = model.numAtoms()
-    response_matrix = np.zeros((n_atoms, n_atoms))
-    LOGGER.progress('Calculating perturbation response', n_atoms, '_prody_prs')
-    i3 = -3
-    i3p3 = 0
+    n_modes = model.numModes()
+    LOGGER.timeit('_pairdef')
+
+    r_ij = np.zeros((n_atoms,n_atoms,3))
+    r_ij_norm = np.zeros((n_atoms,n_atoms,3))
+
     for i in range(n_atoms):
-        i3 += 3
-        i3p3 += 3
-        forces = np.random.rand(repeats * 3).reshape((repeats, 3))
-        forces /= ((forces**2).sum(1)**0.5).reshape((repeats, 1))
-        for force in forces:
-            response_matrix[i] += (
-                np.dot(cov[:, i3:i3p3], force)
-                ** 2).reshape((n_atoms, 3)).sum(1)
-        LOGGER.update(i, '_prody_prs')
+        for j in range(i+1,n_atoms):
+            r_ij[i][j] = coords[j,:] - coords[i,:]
+            r_ij[j][i] = r_ij[i][j]
+            r_ij_norm[i][j] = r_ij[i][j]/linalg.norm(r_ij[i][j])
+            r_ij_norm[j][i] = r_ij_norm[i][j]
 
-    response_matrix /= repeats
-    LOGGER.clear()
-    LOGGER.report('Perturbation response scanning completed in %.1fs.',
-                  '_prody_prs')
-    if atoms is not None:
-        atoms.setData('prs_profile', response_matrix)
-    return response_matrix
+    eigvecs = model.getEigvecs()
+    eigvals = model.getEigvals()
+    
+    D_pair_k = []
+    mode_nr = []
+    ind1 = ind1 - resnum_list[0]
+    ind2 = ind2 - resnum_list[0]
 
-    # save the original PRS matrix
-    np.savetxt('orig_PRS_matrix', response_matrix, delimiter='\t', fmt='%8.6f')
-    # calculate the normalized PRS matrix
-    self_dp = np.diag(response_matrix)  # using self displacement (diagonal of
-                               # the original matrix) as a
-                               # normalization factor
-    self_dp = self_dp.reshape(n_atoms, 1)
-    norm_PRS_mat = response_matrix / np.repeat(self_dp, n_atoms, axis=1)
-    # suppress the diagonal (self displacement) to facilitate
-    # visualizing the response profile
-    norm_PRS_mat = norm_PRS_mat - np.diag(np.diag(norm_PRS_mat))
-    np.savetxt('norm_PRS_matrix', norm_PRS_mat, delimiter='\t', fmt='%8.6f')
-    return response_matrix
+    for m in range(6,n_modes):
+        U_ij_k = [(eigvecs[ind1*3][m] - eigvecs[ind2*3][m]), (eigvecs[ind1*3+1][m] \
+            - eigvecs[ind2*3+1][m]), (eigvecs[ind1*3+2][m] - eigvecs[ind2*3+2][m])] 
+        D_ij_k = abs(sqrt(kbt/eigvals[m])*(np.vdot(r_ij_norm[ind1][ind2], U_ij_k)))  
+        D_pair_k.append(D_ij_k)
+        mode_nr.append(m)
+
+    LOGGER.report('Deformation was calculated in %.2lfs.', label='_pairdef')
+    
+    return mode_nr, D_pair_k
+
+def calcHinges(modes, atoms=None, flag=False):
+    """Returns the hinge sites identified using normal modes.     
+
+    :arg modes: normal modes of which will be used to identify hinge sites
+    :type modes: :class:`.GNM`  
+    
+    :arg atoms: an Atomic object on which to map hinges. The output will then be a selection. 
+    :type atoms: :class:`.Atomic`
+
+    :arg flag: whether return flag or index array. Default is **False**
+    :type flag: bool
+
+    """
+
+    def identify(v):
+        # obtain the signs of eigenvector
+        s = np.sign(v)
+        # obtain the relative magnitude of eigenvector
+        mag = np.sign(np.diff(np.abs(v)))
+        # obtain the cross-overs
+        torf = np.diff(s)!=0
+        torf = np.append(torf, [False], axis=0)
+        # find which side is more close to zero
+        for j, m in enumerate(mag):
+            if torf[j] and m < 0:
+                torf[j+1] = True
+                torf[j] = False
+
+        return torf
+
+    if modes.is3d():
+        raise ValueError('3D models are not supported.')
+
+    # obtain the eigenvectors
+    V = modes.getArray()
+    if V.ndim == 1:
+        hinges = identify(V)
+    elif V.ndim == 2:
+        _, n = V.shape
+        hinges = []
+        for i in range(n):
+            v = V[:, i]
+            torf = identify(v)
+            hinges.append(torf)
+
+        hinges = np.stack(hinges).T
+    else:
+        raise TypeError('wrong dimension of the array: %d'%V.ndim)
+    
+    if not flag:
+        hinge_list = np.where(hinges)[0]
+        if atoms is not None:
+            if isinstance(atoms, Atomic):
+                return atoms[hinge_list]
+            else:
+                raise TypeError('atoms should be an Atomic object')
+        return sorted(set(hinge_list))
+    return hinges
+
+def calcHitTime(model, method='standard'):
+    """Returns the hit and commute times between pairs of nodes calculated 
+    based on a :class:`.NMA` object. 
+
+    .. [CB95] Chennubhotla C., Bahar I. Signal Propagation in Proteins and Relation
+    to Equilibrium Fluctuations. *PLoS Comput Biol* **2007** 3(9).
+
+    :arg model: model to be used to calculate hit times
+    :type model: :class:`.NMA`  
+
+    :arg method: method to be used to calculate hit times. Available options are 
+        ``"standard"`` or ``"kirchhoff"``. Default is ``"standard"``
+    :type method: str
+
+    :returns: (:class:`~numpy.ndarray`, :class:`~numpy.ndarray`)
+    """
+
+    try:
+        K = model.getKirchhoff()
+    except AttributeError:
+        raise TypeError('model must be an NMA instance')
+
+    if K is None:
+        raise ValueError('model not built')
+    
+    method = method.lower()
+
+    D = np.diag(K)
+    A = np.diag(D) - K
+
+    start = time.time()
+    linalg = importLA()
+    if method == 'standard':
+        st = D / sum(D)
+
+        P = np.dot(np.diag(D**(-1)), A)
+        W = np.ones((len(st), 1)) * st.T
+        Z = linalg.pinv(np.eye(P.shape[0], P.shape[1]) - P + W)
+
+        H = np.ones((len(st), 1)) * np.diag(Z).T - Z
+        H = H / W
+        H = H.T
+
+    elif method == 'kirchhoff':
+        K_inv = linalg.pinv(K)
+        sum_D = sum(D)
+
+        T1 = (sum_D * np.ones((len(D),1)) * np.diag(K_inv)).T
+
+        T2 = sum_D * K_inv
+        T3_i = np.dot((np.ones((len(D),1)) * D), K_inv)
+
+        H = T1 - T2 + T3_i - T3_i.T
+
+    C = H + H.T
+
+    LOGGER.debug('Hit and commute times are calculated in  {0:.2f}s.'
+                 .format(time.time()-start)) 
+    return H, C
+
+
+def calcAnisousFromModel(model, ):
+    """Returns a Nx6 matrix containing anisotropic B factors (ANISOU lines)
+    from a covariance matrix calculated from **model**.
+
+    :arg model: 3D model from which to calculate covariance matrix
+    :type model: :class:`.ANM`, :class:`.PCA`
+
+    .. ipython:: python
+
+       from prody import *
+       protein = parsePDB('1ejg')
+       anm, calphas = calcANM(protein)
+       adp_matrix = calcAnisousFromModel(anm)"""
+
+    if not isinstance(model, (NMA, Mode)) or not model.is3d():
+        raise TypeError('model must be of type ANM, PCA or Mode, not {0}'
+                        .format(type(model)))
+
+    cov = calcCovariance(model)
+    n_atoms = model.numAtoms()
+    
+    submatrices = [cov[i*3:(i+1)*3, i*3:(i+1)*3] for i in range(n_atoms)]
+
+    anisou = np.zeros((n_atoms, 6))
+    for index, submatrix in enumerate(submatrices):
+        anisou[index, 0] = submatrix[0, 0]
+        anisou[index, 1] = submatrix[1, 1]
+        anisou[index, 2] = submatrix[2, 2]
+        anisou[index, 3] = submatrix[0, 1]
+        anisou[index, 4] = submatrix[0, 2]
+        anisou[index, 5] = submatrix[1, 2]
+    return anisou
+
+
+def calcScipionScore(modes):
+    """Calculate the score from hybrid electron microscopy normal mode analysis (HEMNMA) 
+    [CS14]_ as implemented in the Scipion continuousflex plugin [MH20]_. This score 
+    prioritises modes as a function of mode number and collectivity order.
+
+    .. [CS14] Sorzano COS, de la Rosa-Trevín JM, Tama F, Jonić S.
+       Hybrid Electron Microscopy Normal Mode Analysis graphical interface and protocol.
+       *J Struct Biol* **2014** 188:134-41.
+
+    .. [MH20] Harastani M, Sorzano COS, Jonić S. 
+       Hybrid Electron Microscopy Normal Mode Analysis with Scipion.
+       *Protein Sci* **2020** 29:223-236.
+
+    :arg modes: mode(s) or vector(s)
+    :type modes: :class:`.Mode`, :class:`.Vector`, :class:`.ModeSet`, :class:`.NMA`
+    """
+    n_modes = modes.numModes()
+    
+    if n_modes > 1:
+        collectivityList = list(calcCollectivity(modes))
+    else:
+        collectivityList = [calcCollectivity(modes)]
+
+    idxSorted = [i[0] for i in sorted(enumerate(collectivityList),
+                                      key=lambda x: x[1],
+                                      reverse=True)]
+
+    score = np.zeros(n_modes)
+    modeNum = list(range(n_modes))
+
+    for i in range(n_modes):
+        score[idxSorted[i]] = idxSorted[i] + modeNum[i] + 2  
+
+    score = score / (2.0 * n_modes) 
+
+    return score
+
+calcHemnmaScore = calcScipionScore

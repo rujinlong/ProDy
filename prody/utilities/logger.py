@@ -7,11 +7,15 @@ import os.path
 import logging
 import datetime
 import logging.handlers
+import numbers
 
-__all__ = ['PackageLogger', 'LOGGING_LEVELS']
+__all__ = ['PackageLogger', 'LOGGING_LEVELS', 'LOGGER']
+
+LOGGING_PROGRESS = logging.INFO + 5
 
 LOGGING_LEVELS = {'debug': logging.DEBUG,
                 'info': logging.INFO,
+                'progress': LOGGING_PROGRESS,
                 'warning': logging.WARNING,
                 'error': logging.ERROR,
                 'critical': logging.CRITICAL,
@@ -58,11 +62,12 @@ class PackageLogger(object):
         self._error = kwargs.get('error', 'ERROR ')
 
         self._n = None
-        self._last = None
         self._barlen = None
-        self._prev = None
         self._line = None
         self._times = {}
+        self._info = {}
+
+        self._n_progress = 0
 
     # ====================
     # Attributes
@@ -155,9 +160,10 @@ class PackageLogger(object):
     def clear(self):
         """Clear current line in ``sys.stderr``."""
 
-        if self._line and self._level < logging.WARNING:
-            sys.stderr.write('\r' + ' ' * (len(self._line)) + '\r')
-            self._line = ''
+        if self._level != LOGGING_PROGRESS: 
+            if self._line and self._level < logging.WARNING:
+                sys.stderr.write('\r' + ' ' * (len(self._line)) + '\r')
+                self._line = ''
 
     def exit(self, status=0):
         """Exit the interpreter."""
@@ -174,7 +180,7 @@ class PackageLogger(object):
         self._logger.addHandler(hdlr)
 
     def getHandlers(self):
-        """Return handlers."""
+        """Returns handlers."""
 
         return self._logger.handlers
 
@@ -233,43 +239,63 @@ class PackageLogger(object):
     def progress(self, msg, steps, label=None, **kwargs):
         """Instantiate a labeled process with message and number of steps."""
 
-        assert isinstance(steps, int) and steps > 0, \
-            'steps must be a positive integer'
-        self._steps = steps
-        self._last = 0
+        if steps is not None:  # if None then no upperlimit
+            assert isinstance(steps, numbers.Integral) and steps > 0, \
+                'steps must be a positive integer'
+        
         self._times[label] = time.time()
-        self._prev = (0, 0)
-        self._msg = msg
-        self._line = ''
+        self._info[label] = {}
+        self._info[label]['steps'] = steps
+        self._info[label]['msg'] = msg
+        self._info[label]['last'] = 0
 
-    def update(self, step, label=None):
+        if not hasattr(self, '_verb'):
+            self._verb = self._getverbosity()
+            if self._level < logging.WARNING:
+                self._setverbosity('progress')
+        self._n_progress += 1
+
+    def update(self, step, msg=None, label=None):
         """Update progress status to current line in the console."""
 
-        assert isinstance(step, int), 'step must be a positive integer'
-        n = self._steps
+        assert isinstance(step, numbers.Integral), 'step must be a positive integer'
+        
+        if msg is None:
+            msg = self._info[label]['msg']
+        else:
+            self._info[label]['msg'] = msg
+        
+        last = self._info[label]['last']
+        n = self._info[label]['steps']
         i = step
-        if self._level < logging.WARNING and n > 0 and i <= n and \
-            i > self._last:
+        if self._level < logging.WARNING:
             start = self._times[label]
-            self._last = i
-            percent = 100 * i / n
-            if percent > 3:
-                seconds = int(math.ceil((time.time()-start) * (n-i)/i))
-                prev = (percent, seconds)
+            sys.stderr.write('\r' + ' ' * last + '\r')
+            if n is None:  # no upperlimit
+                line = self._prefix + msg % i
+            elif i <= n:
+                percent = 100 * i / n
+                if percent > 3:
+                    seconds = int(math.ceil((time.time()-start) * (n-i)/i))
+                    line = self._prefix + msg + ' [%3d%%] %ds' % (percent, seconds)
+                else:
+                    line = self._prefix + msg + ' [%3d%%]' % percent
             else:
-                prev = (percent, 0)
-            if self._prev == prev:
                 return
-            sys.stderr.write('\r' + ' ' * (len(self._line)) + '\r')
-            if percent > 3:
-                line = self._prefix + self._msg + \
-                    ' [%3d%%] %ds' % (percent, seconds)
-            else:
-                line = self._prefix + self._msg + ' [%3d%%]' % percent
             sys.stderr.write(line)
             sys.stderr.flush()
-            self._prev = prev
             self._line = line
+            self._info[label]['last'] = len(line)
+
+    def finish(self):
+        self._n_progress -= 1
+        if self._n_progress < 0:
+            self._n_progress = 0
+        if self._n_progress == 0:
+            if hasattr(self, '_verb'):
+                self._setverbosity(self._verb)
+                del self._verb
+                self.clear()
 
     def sleep(self, seconds, msg=''):
         """Sleep for seconds while updating screen message every second.
@@ -288,7 +314,7 @@ class PackageLogger(object):
         self._times[label] = time.time()
 
     def timing(self, label=None):
-        """Return timing for a labeled or default (**None**) process."""
+        """Returns timing for a labeled or default (**None**) process."""
 
         return time.time() - self._times.get(label, 0)
 
@@ -297,3 +323,5 @@ class PackageLogger(object):
         at *debug* logging level."""
 
         self.debug(msg % (time.time() - self._times[label]))
+
+LOGGER = PackageLogger('.prody')

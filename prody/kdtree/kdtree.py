@@ -2,19 +2,34 @@
 """This module defines :class:`KDTree` class for dealing with atomic coordinate
 sets and handling periodic boundary conditions."""
 
-from numpy import array, ndarray, concatenate
+from numpy import array, ndarray, concatenate, empty
 
 from prody import LOGGER
 
+def createKDTreeByDim(KDTclass, coords, bucketsize):
+    kdt = KDTclass(3, bucketsize)
+    kdt.set_data(coords)
+    return kdt
+
+def createKDTreeByCoords(KDTclass, coords, bucketsize):
+    kdt = KDTclass(coords, bucketsize)
+    return kdt
+
 try:
-    from ._CKDTree import KDTree as CKDTree
+    from ._CKDTree import KDTree as _KDTree
+    CKDTree = lambda coords, bz : createKDTreeByDim(_KDTree, coords, bz) 
 except ImportError:
     try:
-        from Bio.KDTree._CKDTree import KDTree as CKDTree
+        from Bio.PDB.kdtrees import KDTree as _KDTree
+        CKDTree = lambda coords, bz : createKDTreeByCoords(_KDTree, coords, bz) 
     except ImportError:
-        raise ImportError('CKDTree module could not be imported. '
-                          'Reinstall ProDy or install Biopython'
-                          'to solve the problem.')
+        try:
+            from Bio.KDTree._CKDTree import KDTree as _KDTree
+            CKDTree = lambda coords, bz : createKDTreeByDim(_KDTree, coords, bz) 
+        except ImportError:
+            raise ImportError('CKDTree module could not be imported. '
+                            'Reinstall ProDy or install Biopython '
+                            'to solve the problem.')
 
 __all__ = ['KDTree']
 
@@ -134,15 +149,13 @@ class KDTree(object):
         self._unitcell = None
         self._neighbors = None
         if unitcell is None:
-            self._kdtree = CKDTree(3, self._bucketsize)
-            self._kdtree.set_data(coords)
+            self._kdtree = CKDTree(coords, self._bucketsize)
         else:
             if not isinstance(unitcell, ndarray):
                 raise TypeError('unitcell must be a Numpy array')
             if unitcell.shape != (3,):
                 raise ValueError('unitcell.shape must be (3,)')
-            self._kdtree = CKDTree(3, self._bucketsize)
-            self._kdtree.set_data(coords)
+            self._kdtree = CKDTree(coords, self._bucketsize)
             self._coords = coords
             self._unitcell = unitcell
             self._replicate = REPLICATE * unitcell
@@ -195,8 +208,8 @@ class KDTree(object):
             else:
                 kdtree = self._kdtree
                 search = kdtree.search_center_radius
-                get_radii = kdtree.get_radii
-                get_indices = kdtree.get_indices
+                get_radii = lambda : get_KDTree_radii(kdtree)
+                get_indices = lambda : get_KDTree_indices(kdtree)
                 get_count = kdtree.get_count
 
                 _dict = {}
@@ -219,8 +232,7 @@ class KDTree(object):
                     coords = self._coords
                     coords = concatenate([coords + rep
                                           for rep in self._replicate])
-                    kdtree = CKDTree(3, self._bucketsize)
-                    kdtree.set_data(coords)
+                    kdtree = CKDTree(coords, self._bucketsize)
                     self._kdtree2 = kdtree
                 n_atoms = len(self._coords)
                 _dict = {}
@@ -241,13 +253,13 @@ class KDTree(object):
 
 
     def getIndices(self):
-        """Return array of indices for points or pairs, depending on the type
+        """Returns array of indices for points or pairs, depending on the type
         of the most recent search."""
 
         if self.getCount():
             if self._unitcell is None:
                 if self._neighbors is None:
-                    return self._kdtree.get_indices()
+                    return get_KDTree_indices(self._kdtree)
                 else:
                     return array([(n.index1, n.index2)
                                   for n in self._neighbors], int)
@@ -256,12 +268,12 @@ class KDTree(object):
         return self._none()
 
     def getDistances(self):
-        """Return array of distances."""
+        """Returns array of distances."""
 
         if self.getCount():
             if self._unitcell is None:
                 if self._neighbors is None:
-                    return self._kdtree.get_radii()
+                    return get_KDTree_radii(self._kdtree)
                 else:
                     return array([n.radius for n in self._neighbors])
             else:
@@ -270,7 +282,7 @@ class KDTree(object):
         return self._none()
 
     def getCount(self):
-        """Return number of points or pairs."""
+        """Returns number of points or pairs."""
 
         if self._unitcell is None:
             if self._neighbors is None:
@@ -279,3 +291,25 @@ class KDTree(object):
                 return self._kdtree.neighbor_get_count()
         else:
             return len(self._pbcdict)
+
+def get_KDTree_indices(kdtree):
+    indices = None
+    try:
+        indices = kdtree.get_indices()
+    except:
+        n = kdtree.get_count()
+        if n:
+            indices = empty(n, int)
+            kdtree.get_indices(indices)
+    return indices
+
+def get_KDTree_radii(kdtree):
+    radii = None
+    try:
+        radii = kdtree.get_radii()
+    except:
+        n = kdtree.get_count()
+        if n:
+            radii = empty(n, 'f')
+            kdtree.get_radii(radii)
+    return radii

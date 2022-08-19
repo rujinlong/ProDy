@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""This module defines functions for supporting VMD plugin `Heat Mapper`_
+"""This module defines functions for supporting VMD plugin `Heatmapper`_
 format files.
 
-.. _Heat Mapper: http://www.ks.uiuc.edu/Research/vmd/plugins/heatmapper/"""
+.. _Heatmapper: http://www.ks.uiuc.edu/Research/vmd/plugins/heatmapper/"""
 
 __author__ = 'Ahmet Bakan, Anindita Dutta'
 
@@ -87,7 +87,7 @@ def showHeatmap(heatmap, *args, **kwargs):
 
 
 def parseHeatmap(heatmap, **kwargs):
-    """Return a two dimensional array and a dictionary with information parsed
+    """Returns a two dimensional array and a dictionary with information parsed
     from *heatmap*, which may be an input stream or an :file:`.hm` file in VMD
     plugin Heat Mapper format."""
 
@@ -151,7 +151,7 @@ def parseHeatmap(heatmap, **kwargs):
 
 
 def writeHeatmap(filename, heatmap, **kwargs):
-    """Return *filename* that contains *heatmap* in Heat Mapper :file:`.hm`
+    """Returns *filename* that contains *heatmap* in Heat Mapper :file:`.hm`
     file (extension is automatically added when not found).  *filename* may
     also be an output stream.
 
@@ -192,7 +192,7 @@ def writeHeatmap(filename, heatmap, **kwargs):
     try:
         write, close, stream = filename.write, lambda: None, filename
     except AttributeError:
-        out = openFile(addext(filename, '.hm'), 'wb')
+        out = openFile(addext(filename, '.hm'), 'w')
         write, close, stream = out.write, out.close, out
 
     format = kwargs.pop('format', '%f')

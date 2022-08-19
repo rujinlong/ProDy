@@ -16,8 +16,11 @@ class Contacts(object):
     of instantiation."""
 
     def __init__(self, atoms, unitcell=None):
-        """*atoms* must be an :class:`.Atomic` instance.  When an orthorhombic
-        *unitcell* array is given"""
+        """*atoms* must be an :class:`.Atomic` instance.  
+        
+        :arg unitcell: orthorhombic unitcell dimension array with shape 
+                        ``(3,)`` for KDTree. Default is **None**.
+        :type unitcell: :class:`~numpy.ndarray`"""
 
         try:
             self._acsi = atoms.getACSIndex()
@@ -46,7 +49,7 @@ class Contacts(object):
                         self._indices = self._indices.getIndices()
                 else:
                     self._acsi = None
-                self._kdtree = KDTree(self._atoms._getCoords(),
+                self._kdtree = KDTree(atoms._getCoords(),
                                       unitcell=unitcell)
         else:
             try:
@@ -118,12 +121,12 @@ class Contacts(object):
     select = __call__
 
     def getAtoms(self):
-        """Return atoms, or coordinate array, provided at instantiation.."""
+        """Returns atoms, or coordinate array, provided at instantiation.."""
 
         return self._atoms
 
     def getUnitcell(self):
-        """Return unitcell array, or **None** if one was not provided."""
+        """Returns unitcell array, or **None** if one was not provided."""
 
         return self._unitcell.copy()
 
@@ -275,7 +278,7 @@ def iterNeighbors(atoms, radius, atoms2=None, unitcell=None):
 
 
 def findNeighbors(atoms, radius, atoms2=None, unitcell=None):
-    """Return list of neighbors that are within *radius* of each other and the
+    """Returns list of neighbors that are within *radius* of each other and the
     distance between them.  See :func:`iterNeighbors` for more details."""
 
     return list(iterNeighbors(atoms, radius, atoms2, unitcell))
